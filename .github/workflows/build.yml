@@ -45,8 +45,6 @@ jobs:
 
       - name: Build universal macOS app
         if: runner.os == 'macOS'
-        env:
-          APPLE_SIGNING_IDENTITY: '-'
         run: |
           rustup default stable
           rustup target add x86_64-apple-darwin

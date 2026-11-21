@@ -24,7 +24,8 @@ stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
 
 ditto "$app" "$stage/Link Selector.app"
-codesign --verify --strict "$stage/Link Selector.app"
+/usr/bin/codesign --force --sign - "$stage/Link Selector.app"
+/usr/bin/codesign --verify --strict "$stage/Link Selector.app"
 ln -s /Applications "$stage/Applications"
 mkdir -p "$(dirname "$output")"
 hdiutil create -volname "Link Selector" -srcfolder "$stage" -fs HFS+ -format UDZO "$output"
