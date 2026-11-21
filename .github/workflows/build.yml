@@ -1,0 +1,103 @@
+name: Test and release
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos
+            runner: macos-26
+          - platform: windows-x64
+            runner: windows-2025
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - name: Check release version
+        if: github.ref_type == 'tag'
+        run: node -e 'const version = require("./src-tauri/tauri.conf.json").version; if (process.env.GITHUB_REF_NAME !== `v${version}`) throw new Error(`Expected tag v${version}`)'
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --component rustfmt --no-self-update
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+
+      - run: cargo +stable fmt --manifest-path src-tauri/Cargo.toml --check
+      - run: cargo +stable test --manifest-path src-tauri/Cargo.toml --locked
+
+      - name: Build universal macOS app
+        if: runner.os == 'macOS'
+        env:
+          APPLE_SIGNING_IDENTITY: '-'
+        run: |
+          rustup default stable
+          rustup target add x86_64-apple-darwin
+          npm run tauri build -- --ci --target universal-apple-darwin --bundles app -- --locked
+      - name: Package macOS disk image
+        if: runner.os == 'macOS'
+        run: |
+          bash scripts/package-macos.sh \
+            'src-tauri/target/universal-apple-darwin/release/bundle/macos/Link Selector.app' \
+            'release/Link-Selector-macOS-universal.dmg'
+
+      - name: Build and test Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          rustup default stable
+          npm run tauri build -- --ci --bundles nsis -- --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $installers = @(Get-ChildItem src-tauri/target/release/bundle/nsis/*-setup.exe)
+          if ($installers.Count -ne 1) { throw 'Expected one NSIS installer' }
+          & ./scripts/test-windows-installer.ps1 -Installer $installers[0].FullName
+          New-Item -ItemType Directory release -Force | Out-Null
+          Copy-Item $installers[0].FullName release/Link-Selector-Windows-x64-setup.exe
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.platform }}
+          path: release/*
+          if-no-files-found: error
+
+  release:
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: release
+          merge-multiple: true
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd release
+          files=(Link-Selector-macOS-universal.dmg Link-Selector-Windows-x64-setup.exe)
+          sha256sum "${files[@]}" > SHA256SUMS.txt
+          release_flags=()
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            release_flags+=(--prerelease)
+          fi
+          gh release create "$GITHUB_REF_NAME" "${files[@]}" SHA256SUMS.txt \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes "${release_flags[@]}"
