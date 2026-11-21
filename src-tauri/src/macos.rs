@@ -9,7 +9,13 @@ use std::{collections::HashSet, ffi::OsStr, path::Path, process::Command};
 use tauri::Url;
 
 pub fn browser_choices(url: &Url, own_identifier: &str) -> Vec<BrowserChoice> {
-    let Some(url) = NSURL::URLWithString(&NSString::from_str(url.as_str())) else {
+    // Look for browsers even for local HTML, which is also associated with editors.
+    let address = if url.scheme() == "file" {
+        "https://example.invalid/"
+    } else {
+        url.as_str()
+    };
+    let Some(url) = NSURL::URLWithString(&NSString::from_str(address)) else {
         return Vec::new();
     };
     let mut seen = HashSet::new();
