@@ -1,38 +1,40 @@
 # Link Selector
 
-メールやチャットなどのアプリでWebリンクを開くたびに、そのリンクを開くブラウザを選べるデスクトップアプリです。
-
-## 開発状況
-
-macOS版の初期実装です。macOS 13以降を対象としています。Apple SiliconのmacOS 26.5.1で、リンクの受信、複数リンクの順次表示、キャンセル、Firefoxでの起動を確認しました。Windows版は今後の開発予定です。
+メールやチャットなどからWebリンクを開くたびに、そのリンクを開くブラウザを選べるデスクトップアプリです。macOS 13以降（Apple Silicon・Intel）とWindows 11（x64）向けにビルドできます。
 
 ## 使い方
 
-1. ビルドした `Link Selector.app` を「アプリケーション」フォルダにコピーして起動します。DMGからインストールする場合は、イメージを開いて中のアプリを「アプリケーション」フォルダにドラッグします。
-2. Link Selectorの「システム設定を開く」をクリックし、「デスクトップとDock」→「デフォルトのWebブラウザ」で **Link Selector** を選びます。
-3. メールやチャットからWebリンクを開き、表示されたブラウザをクリックします。上から9件までは数字キーでも選べます。
+- **macOS**。DMGに入っている `Link Selector.app` を「アプリケーション」にコピーして起動します。「システム設定」→「デスクトップとDock」→「デフォルトのWebブラウザ」で **Link Selector** を選びます。
+- **Windows 11**。`Link-Selector-Windows-x64-setup.exe` を実行します。「設定」→「アプリ」→「既定のアプリ」→「Link Selector」で、`HTTP` と `HTTPS` の両方に Link Selector を選びます。
 
-`Esc` で表示中のリンクをキャンセルできます。複数のリンクを開いた場合は受信順に表示します。起動に失敗した場合は、選択画面で別のブラウザを選べます。「リンクをコピー」でURLをクリップボードにコピーできます。
+外部アプリのリンクを開くと選択画面が出ます。ブラウザ名をクリックするか、上から9件まで数字キーで選べます。`Esc` は表示中のリンクをキャンセルします。複数のリンクは受信順に表示し、URLや選択履歴は保存しません。
 
-対象はmacOSが既定のWebブラウザに渡す `http` / `https` リンクです。URLやブラウザの選択履歴は保存しません。
+対象はOSが既定ブラウザに渡す `http` / `https` リンクです。macOSでは、Finderの「このアプリケーションで開く」からHTML・XHTML文書を渡すこともできます。
 
-## macOSでビルド
+### macOSの設定に表示されない場合
 
-Node.js 22.12以降のLTS版、Rust stable、Xcode Command Line Toolsが必要です。
+`0.1.0` のアプリには、既定ブラウザ候補の判定に使われるHTML・XHTMLの関連付けがありません。`0.2.0` 以降のアプリを「アプリケーション」にコピーして起動したあと、システム設定を開き直してください。
+
+## ローカルビルドとテスト
+
+Node.js 24 LTSとRust stableが必要です。macOSではXcode Command Line Tools、WindowsではVisual Studio Build ToolsのC++ワークロードとWebView2を用意します。
 
 ```sh
 npm ci
-npm run tauri build -- --bundles app
+npm test
+npm run build
+cargo test --manifest-path src-tauri/Cargo.toml --locked
 ```
 
-アプリは `src-tauri/target/release/bundle/macos/` に生成されます。DMGも作る場合は、`--bundles app` を外してビルドすると `src-tauri/target/release/bundle/dmg/` に生成されます。TauriのDMG作成では、Finderを操作する権限が必要になる場合があります。配布用のDeveloper ID署名と公証は別途設定が必要です。
+- **macOS**。`npm run tauri build -- --bundles app` で、`src-tauri/target/release/bundle/macos/` にアプリを生成します。既定ブラウザを変更せず試すには、`open -a "src-tauri/target/release/bundle/macos/Link Selector.app" https://example.com/` を実行します。
+- **Windows**。`npm run tauri build -- --bundles nsis` で、`src-tauri/target/release/bundle/nsis/` にインストーラーを生成します。
 
-既定ブラウザを変更する前に選択画面だけ試す場合は、ビルドしたアプリを指定してテストURLを開けます。
+## CIとリリース
 
-```sh
-open -a "src-tauri/target/release/bundle/macos/Link Selector.app" https://example.com/
-```
+[GitHub Actions](https://github.com/kmr-gks/link-selector/actions/workflows/build.yml) は、`main` へのpushとプルリクエストで、両OSのテスト、インストーラーのビルド、配布物の検証を実行します。各実行の成果物からDMGとWindowsインストーラーを取得できます。
+
+`v0.2.0` のようにアプリのバージョンと一致するタグをpushすると、両OSの検証を通過した後に [GitHub Releases](https://github.com/kmr-gks/link-selector/releases) へインストーラーとSHA-256チェックサムを公開します。macOS版はアドホック署名、Windows版は開発者証明書による署名前のビルドです。
 
 ## 技術構成
 
-Tauri 2とRustでアプリを構成し、選択画面にTypeScript、HTML、CSSを使っています。macOS固有のブラウザ検出・起動は `src-tauri/src/macos.rs` にまとめています。
+Tauri 2とRustでアプリを構成し、両OSの選択画面をTypeScript、HTML、CSSで実装しています。OSとの連携は `src-tauri/src/macos.rs` と `src-tauri/src/windows.rs` に分かれています。
