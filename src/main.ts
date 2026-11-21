@@ -83,19 +83,36 @@ function openSettings() {
   void invoke("open_settings").catch((error) => setStatus(String(error)));
 }
 
-function heading(title: string, description: string) {
+function heading(title: string, description: string, isLink = false) {
   const header = element("header", "heading");
   const mark = element("span", "mark", "↗");
   mark.setAttribute("aria-hidden", "true");
   const text = element("div", "heading-text");
   const subtitle = element("p", "subtitle", description);
-  subtitle.title = description;
+  if (isLink) {
+    subtitle.classList.add("link-url");
+    subtitle.tabIndex = 0;
+    subtitle.setAttribute("role", "region");
+    subtitle.setAttribute("aria-label", "開くリンク");
+  }
   text.append(element("h1", "", title), subtitle);
   header.append(mark, text);
   return header;
 }
 
+function fitPicker(list?: HTMLUListElement) {
+  // A scrollable list's hidden rows do not contribute to the main element's height.
+  const contentHeight = list
+    ? app.scrollHeight + list.scrollHeight - list.clientHeight
+    : current ? app.scrollHeight : null;
+  void invoke("fit_picker", { contentHeight }).catch(() => {
+    // The layout still allows scrolling if the OS cannot resize the window.
+  });
+}
+
 function render() {
+  const wasPicker = app.classList.contains("picker");
+  app.classList.toggle("picker", current !== null);
   const status = element("p", "status");
   status.setAttribute("role", "status");
   if (!current) {
@@ -107,6 +124,7 @@ function render() {
       button("システム設定を開く", "primary", openSettings),
       status,
     );
+    if (wasPicker) fitPicker();
     return;
   }
 
@@ -139,11 +157,12 @@ function render() {
     button("キャンセル", "secondary", () => void processLink("cancel_link")),
   );
   app.replaceChildren(
-    heading("ブラウザを選択", url),
+    heading("ブラウザを選択", url, true),
     browsers.length ? list : element("p", "instructions", "このリンクを開けるブラウザが見つかりませんでした。"),
     status,
     footer,
   );
+  fitPicker(browsers.length ? list : undefined);
 }
 
 window.addEventListener("keydown", (event) => {

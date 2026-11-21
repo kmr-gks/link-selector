@@ -52,6 +52,33 @@ describe("browser picker", () => {
     await vi.waitFor(() => expect(request).toHaveBeenCalledWith("open_browser", { id: 7, browserId: "browser-two" }));
   });
 
+  it("keeps the full URL in a keyboard-accessible region", async () => {
+    const url = `https://example.com/${"a".repeat(3000)}?end=visible`;
+    picker = { ...link, url };
+    emitQueueChange();
+    await vi.waitFor(() => {
+      const region = document.querySelector<HTMLElement>('[aria-label="開くリンク"]');
+      expect(region?.textContent).toBe(url);
+      expect(region?.tabIndex).toBe(0);
+    });
+  });
+
+  it("requests space for browser rows below the fold", async () => {
+    const scrollHeight = vi.spyOn(HTMLElement.prototype, "scrollHeight", "get")
+      .mockImplementation(function (this: HTMLElement) {
+        return this.classList.contains("browsers") ? 456 : 465;
+      });
+    const clientHeight = vi.spyOn(HTMLElement.prototype, "clientHeight", "get")
+      .mockReturnValue(300);
+    try {
+      emitQueueChange();
+      await vi.waitFor(() => expect(request).toHaveBeenCalledWith("fit_picker", { contentHeight: 621 }));
+    } finally {
+      scrollHeight.mockRestore();
+      clientHeight.mockRestore();
+    }
+  });
+
   it("ignores modifier shortcuts and cancels the active link on Escape", async () => {
     key("1", { metaKey: true });
     expect(request).not.toHaveBeenCalledWith("open_browser", expect.anything());

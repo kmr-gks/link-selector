@@ -16,7 +16,10 @@ use serde::Serialize;
 use std::sync::Mutex;
 #[cfg(target_os = "macos")]
 use tauri::RunEvent;
-use tauri::{AppHandle, Emitter, Manager, State, Url, WindowEvent};
+use tauri::{
+    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, State, Url, WebviewWindow,
+    WindowEvent,
+};
 
 #[derive(Serialize)]
 struct BrowserChoice {
@@ -92,6 +95,44 @@ fn copy_link(state: State<'_, Mutex<PendingLinks>>, id: u64) -> Result<(), Strin
 #[tauri::command]
 fn open_settings() -> Result<(), String> {
     platform::open_settings().map_err(|_| "システム設定を開けませんでした。".to_owned())
+}
+
+#[tauri::command]
+fn fit_picker(window: WebviewWindow, content_height: Option<u32>) -> tauri::Result<()> {
+    if window.is_maximized()? || window.is_fullscreen()? {
+        return Ok(());
+    }
+    let Some(monitor) = window.current_monitor()? else {
+        return Ok(());
+    };
+    let default_height = window
+        .app_handle()
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|config| config.label == window.label())
+        .map_or(0.0, |config| config.height);
+    let inner = window.inner_size()?;
+    let frame_height = window.outer_size()?.height.saturating_sub(inner.height);
+    let area = monitor.work_area();
+    let max_height = area.size.height.saturating_sub(frame_height);
+    let scale = window.scale_factor()?;
+    let requested = f64::from(content_height.unwrap_or_default()).max(default_height);
+    let height = ((requested * scale).ceil() as u32).min(max_height);
+    if height == 0 || height == inner.height {
+        return Ok(());
+    }
+
+    let position = window.outer_position()?;
+    let last_y = area.position.y + (max_height - height) as i32;
+    let y = position.y.clamp(area.position.y, last_y);
+    let target_position = PhysicalPosition::new(position.x, y);
+    window.set_size(PhysicalSize::new(inner.width, height))?;
+    if window.outer_position()? != target_position {
+        window.set_position(target_position)?;
+    }
+    Ok(())
 }
 
 fn finish_link(app: &AppHandle, id: u64, cancelled: bool) {
@@ -172,6 +213,7 @@ fn main() {
             cancel_link,
             copy_link,
             open_settings,
+            fit_picker,
         ])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
