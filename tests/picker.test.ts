@@ -1,0 +1,78 @@
+// @vitest-environment jsdom
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
+
+const request = vi.mocked(invoke);
+const link = {
+  id: 7,
+  url: "https://example.com/path?x=1&y=2",
+  browsers: [
+    { id: "browser-one", name: "Browser One", icon: null },
+    { id: "browser-two", name: "Browser Two", icon: null },
+  ],
+};
+let emitQueueChange: () => void;
+let picker: typeof link | null;
+let failedLaunch: boolean;
+
+function key(name: string, options: KeyboardEventInit = {}) {
+  window.dispatchEvent(new KeyboardEvent("keydown", { key: name, ...options }));
+}
+
+beforeAll(async () => {
+  document.body.innerHTML = '<main id="app"></main>';
+  vi.mocked(listen).mockImplementation(async (event, handler) => {
+    emitQueueChange = () => handler({ event, id: 1, payload: undefined });
+    return () => {};
+  });
+  await import("../src/main");
+});
+
+beforeEach(async () => {
+  picker = link;
+  failedLaunch = false;
+  request.mockReset();
+  request.mockImplementation(async (command) => {
+    if (command === "picker_state") return picker as never;
+    if (command === "open_browser" && failedLaunch) throw "ブラウザを開けませんでした。";
+    return undefined as never;
+  });
+  emitQueueChange();
+  await vi.waitFor(() => expect(document.querySelector("h1")?.textContent).toBe("ブラウザを選択"));
+});
+
+describe("browser picker", () => {
+  it("shows the link and opens the browser assigned to a number key", async () => {
+    expect(document.querySelector(".subtitle")?.textContent).toBe(link.url);
+    key("2");
+    await vi.waitFor(() => expect(request).toHaveBeenCalledWith("open_browser", { id: 7, browserId: "browser-two" }));
+  });
+
+  it("ignores modifier shortcuts and cancels the active link on Escape", async () => {
+    key("1", { metaKey: true });
+    expect(request).not.toHaveBeenCalledWith("open_browser", expect.anything());
+    key("Escape");
+    await vi.waitFor(() => expect(request).toHaveBeenCalledWith("cancel_link", { id: 7 }));
+  });
+
+  it("allows recovery after a browser launch fails", async () => {
+    failedLaunch = true;
+    key("1");
+    await vi.waitFor(() => expect(document.querySelector(".status")?.textContent).toContain("開けません"));
+    failedLaunch = false;
+    key("2");
+    await vi.waitFor(() => expect(request).toHaveBeenCalledWith("open_browser", { id: 7, browserId: "browser-two" }));
+  });
+
+  it("allows copying a link even when no browsers are available", async () => {
+    picker = { ...link, browsers: [] };
+    emitQueueChange();
+    await vi.waitFor(() => expect(document.querySelectorAll(".browser")).toHaveLength(0));
+    document.querySelector<HTMLButtonElement>(".actions button")!.click();
+    await vi.waitFor(() => expect(request).toHaveBeenCalledWith("copy_link", { id: 7 }));
+  });
+});
