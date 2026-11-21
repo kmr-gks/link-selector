@@ -26,16 +26,23 @@
       "capabilities": [
         {
           "identifier": "picker",
-          "windows": ["main"],
-          "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+          "windows": [
+            "main"
+          ],
+          "permissions": [
+            "core:event:allow-listen",
+            "core:event:allow-unlisten"
+          ]
         }
       ]
     }
   },
   "bundle": {
     "active": true,
-    "targets": ["app", "dmg"],
-    "icon": ["icons/icon.png", "icons/icon.icns"],
-    "macOS": { "minimumSystemVersion": "13.0" }
+    "icon": [
+      "icons/icon.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
   }
 }

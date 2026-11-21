@@ -15,3 +15,9 @@ base64 = "0.22"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["NSWorkspace", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSPasteboard", "std"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["NSArray", "NSBundle", "NSData", "NSDictionary", "NSString", "NSURL", "std"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+clipboard-win = "5"
+tauri-plugin-single-instance = "2"
+winreg = "0.56"
+windows-sys = { version = "0.61", features = ["Win32_System_Registry", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }

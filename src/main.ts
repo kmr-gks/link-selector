@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import "./style.css";
 
 interface Browser {
-  path: string;
+  id: string;
   name: string;
   icon: string | null;
 }
@@ -14,6 +14,7 @@ interface Picker {
   browsers: Browser[];
 }
 
+const isWindows = navigator.userAgent.includes("Windows");
 const app = document.querySelector<HTMLElement>("#app")!;
 let current: Picker | null = null;
 let requestNumber = 0;
@@ -56,7 +57,7 @@ async function processLink(command: "open_browser" | "cancel_link", browser?: Br
   busy = true;
   setStatus("");
   try {
-    await invoke(command, { id, browserPath: browser?.path });
+    await invoke(command, { id, browserId: browser?.id });
   } catch (error) {
     if (current?.id === id) setStatus(String(error));
   } finally {
@@ -100,7 +101,9 @@ function render() {
   if (!current) {
     app.replaceChildren(
       heading("Link Selector", "リンクを開くブラウザを、その都度選べます。"),
-      element("p", "instructions", "システム設定の「デスクトップとDock」で、デフォルトのWebブラウザに Link Selector を選んでください。"),
+      element("p", "instructions", isWindows
+        ? "設定の「アプリ」→「既定のアプリ」で Link Selector を選び、HTTP と HTTPS の関連付けを設定してください。"
+        : "システム設定の「デスクトップとDock」で、デフォルトのWebブラウザに Link Selector を選んでください。"),
       button("システム設定を開く", "primary", openSettings),
       status,
     );

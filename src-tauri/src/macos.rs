@@ -1,27 +1,14 @@
+use crate::{Browser, BrowserChoice};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use objc2::rc::autoreleasepool;
 use objc2_app_kit::{
     NSBitmapImageFileType, NSBitmapImageRep, NSPasteboard, NSPasteboardTypeString, NSWorkspace,
 };
 use objc2_foundation::{NSBundle, NSDictionary, NSString, NSURL};
-use serde::Serialize;
 use std::{collections::HashSet, ffi::OsStr, path::Path, process::Command};
 use tauri::Url;
 
-#[derive(Serialize)]
-pub struct BrowserPath {
-    pub path: String,
-    pub name: String,
-}
-
-#[derive(Serialize)]
-pub struct Browser {
-    #[serde(flatten)]
-    pub location: BrowserPath,
-    pub icon: Option<String>,
-}
-
-pub fn browser_paths(url: &Url, own_identifier: &str) -> Vec<BrowserPath> {
+pub fn browser_choices(url: &Url, own_identifier: &str) -> Vec<BrowserChoice> {
     let Some(url) = NSURL::URLWithString(&NSString::from_str(url.as_str())) else {
         return Vec::new();
     };
@@ -53,7 +40,7 @@ pub fn browser_paths(url: &Url, own_identifier: &str) -> Vec<BrowserPath> {
                         .to_string_lossy()
                         .into_owned()
                 });
-            Some(BrowserPath { path, name })
+            Some(BrowserChoice { id: path, name })
         })
         .collect();
     browsers.sort_by_cached_key(|browser| browser.name.to_lowercase());
@@ -62,11 +49,11 @@ pub fn browser_paths(url: &Url, own_identifier: &str) -> Vec<BrowserPath> {
 
 pub fn browsers(url: &Url, own_identifier: &str) -> Vec<Browser> {
     let workspace = NSWorkspace::sharedWorkspace();
-    browser_paths(url, own_identifier)
+    browser_choices(url, own_identifier)
         .into_iter()
-        .map(|location| {
+        .map(|choice| {
             let icon = autoreleasepool(|_| {
-                let icon = workspace.iconForFile(&NSString::from_str(&location.path));
+                let icon = workspace.iconForFile(&NSString::from_str(&choice.id));
                 icon.TIFFRepresentation()
                     .and_then(|tiff| NSBitmapImageRep::imageRepWithData(&tiff))
                     .and_then(|bitmap| {
@@ -80,13 +67,13 @@ pub fn browsers(url: &Url, own_identifier: &str) -> Vec<Browser> {
                     })
                     .map(|png| format!("data:image/png;base64,{}", STANDARD.encode(png.to_vec())))
             });
-            Browser { location, icon }
+            Browser { choice, icon }
         })
         .collect()
 }
 
-pub fn open_in_browser(url: &Url, browser: &BrowserPath) -> Result<(), ()> {
-    open(&["-a", &browser.path, url.as_str()])
+pub fn open_in_browser(url: &Url, browser: &BrowserChoice) -> Result<(), ()> {
+    open(&["-a", &browser.id, url.as_str()])
 }
 
 pub fn open_settings() -> Result<(), ()> {
