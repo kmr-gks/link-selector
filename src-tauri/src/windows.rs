@@ -148,9 +148,76 @@ pub fn open_settings() -> Result<(), ()> {
 }
 
 pub fn copy(url: &str) -> Result<(), ()> {
-    clipboard_win::set_clipboard(clipboard_win::formats::Unicode, url).map_err(|_| ())
+    clipboard_win::set_clipboard_string(url).map_err(|_| ())
 }
 
 fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain([0]).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{fs, thread, time::Duration};
+
+    struct TestClass {
+        root: RegKey,
+        path: String,
+    }
+
+    impl Drop for TestClass {
+        fn drop(&mut self) {
+            let _ = self.root.delete_subkey_all(&self.path);
+        }
+    }
+
+    #[test]
+    fn selected_prog_id_receives_the_original_url() {
+        let scratch = tempfile::tempdir().unwrap();
+        let receiver = scratch.path().join("receive-url.ps1");
+        fs::write(
+            &receiver,
+            r#"param([string]$Url)
+[System.IO.File]::WriteAllText((Join-Path $PSScriptRoot 'received.txt'), $Url)
+"#,
+        )
+        .unwrap();
+
+        let id = format!("LinkSelector.Test.{}", std::process::id());
+        let class = TestClass {
+            root: RegKey::predef(HKEY_CURRENT_USER),
+            path: format!(r"Software\Classes\{id}"),
+        };
+        let (key, _) = class.root.create_subkey(&class.path).unwrap();
+        key.set_value("URL Protocol", &"").unwrap();
+        let (command, _) = key.create_subkey(r"shell\open\command").unwrap();
+        let powershell = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+            .join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
+        let command_line = format!(
+            r#""{}" -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "{}" "%1""#,
+            powershell.display(),
+            receiver.display()
+        );
+        command.set_value("", &command_line).unwrap();
+
+        // If a default browser were launched instead, this URL would stay on loopback.
+        let address = "http://127.0.0.1:9/selected?x=1&y=2";
+        let url = Url::parse(address).unwrap();
+        let browser = BrowserChoice {
+            id,
+            name: "Test browser".into(),
+        };
+        open_in_browser(&url, &browser).unwrap();
+        let received = scratch.path().join("received.txt");
+        for _ in 0..100 {
+            if fs::read_to_string(&received).is_ok_and(|value| value == address) {
+                return;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        panic!(
+            "The selected ProgID did not receive the URL: {:?}",
+            fs::read_to_string(received)
+        );
+    }
 }
