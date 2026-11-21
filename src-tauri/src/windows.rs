@@ -1,13 +1,13 @@
 use crate::{Browser, BrowserChoice};
-use std::collections::HashSet;
-
+use std::{collections::HashSet, io, process::Command};
 use tauri::Url;
-use windows_sys::Win32::UI::{
-    Shell::{
-        ShellExecuteExW, ShellExecuteW, SEE_MASK_CLASSNAME, SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC,
-        SHELLEXECUTEINFOW,
+use windows_sys::Win32::{
+    Foundation::LocalFree,
+    System::Environment::ExpandEnvironmentStringsW,
+    UI::{
+        Shell::{CommandLineToArgvW, ShellExecuteW},
+        WindowsAndMessaging::SW_SHOWNORMAL,
     },
-    WindowsAndMessaging::SW_SHOWNORMAL,
 };
 use winreg::{
     enums::{
@@ -22,7 +22,6 @@ const REGISTERED_APPS: &str = "Software\\RegisteredApplications";
 const BROWSER_CLIENTS: &str = "Software\\Clients\\StartMenuInternet";
 
 pub fn browser_choices(url: &Url, _: &str) -> Vec<BrowserChoice> {
-    let classes = RegKey::predef(HKEY_CLASSES_ROOT);
     let mut seen = HashSet::new();
     let mut choices = Vec::new();
 
@@ -34,7 +33,6 @@ pub fn browser_choices(url: &Url, _: &str) -> Vec<BrowserChoice> {
                     if let Ok(path) = registered.get_value::<String, _>(&name) {
                         add_choice(
                             &root,
-                            &classes,
                             view,
                             &path,
                             &name,
@@ -50,7 +48,6 @@ pub fn browser_choices(url: &Url, _: &str) -> Vec<BrowserChoice> {
                     let path = format!(r"{BROWSER_CLIENTS}\{name}\Capabilities");
                     add_choice(
                         &root,
-                        &classes,
                         view,
                         &path,
                         &name,
@@ -69,7 +66,6 @@ pub fn browser_choices(url: &Url, _: &str) -> Vec<BrowserChoice> {
 
 fn add_choice(
     root: &RegKey,
-    classes: &RegKey,
     view: u32,
     path: &str,
     fallback_name: &str,
@@ -91,9 +87,7 @@ fn add_choice(
         || id.eq_ignore_ascii_case(OWN_PROG_ID)
         || id.eq_ignore_ascii_case("http")
         || id.eq_ignore_ascii_case("https")
-        || classes
-            .open_subkey(format!(r"{id}\shell\open\command"))
-            .is_err()
+        || registered_command(&id).is_err()
         || !seen.insert(id.to_lowercase())
     {
         return;
@@ -113,23 +107,103 @@ pub fn browsers(url: &Url, own_identifier: &str) -> Vec<Browser> {
         .collect()
 }
 
-pub fn open_in_browser(url: &Url, browser: &BrowserChoice) -> Result<(), ()> {
-    let verb = wide("open");
-    let address = wide(url.as_str());
-    let class = wide(&browser.id);
-    let mut options = SHELLEXECUTEINFOW {
-        cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
-        fMask: SEE_MASK_CLASSNAME | SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI,
-        lpVerb: verb.as_ptr(),
-        lpFile: address.as_ptr(),
-        lpClass: class.as_ptr(),
-        nShow: SW_SHOWNORMAL,
-        ..Default::default()
+fn registered_command(id: &str) -> io::Result<String> {
+    let key = RegKey::predef(HKEY_CLASSES_ROOT).open_subkey(format!(r"{id}\shell\open\command"))?;
+    let template: String = key.get_value("")?;
+    if template.trim().is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Empty browser command",
+        ));
+    }
+    Ok(template)
+}
+
+pub fn open_in_browser(url: &Url, browser: &BrowserChoice) -> io::Result<()> {
+    let template = registered_command(&browser.id)?;
+    let expanded = expand_environment(&template)?;
+    let mut arguments = split_command(&expanded)?.into_iter();
+    let program = arguments
+        .next()
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Missing browser executable"))?;
+
+    let mut command = Command::new(program);
+    let mut used_url = false;
+    for argument in arguments {
+        // This invocation contains just the URL, with no additional shell arguments.
+        if argument != "%*" {
+            command.arg(insert_url(&argument, url.as_str(), &mut used_url));
+        }
+    }
+    if !used_url {
+        command.arg(url.as_str());
+    }
+
+    command.spawn().map(|_| ())
+}
+
+fn expand_environment(template: &str) -> io::Result<Vec<u16>> {
+    let template = wide(template);
+    // The first call returns the required size including the terminating null.
+    let required = unsafe { ExpandEnvironmentStringsW(template.as_ptr(), std::ptr::null_mut(), 0) };
+    if required == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut expanded = vec![0; required as usize];
+    let written =
+        unsafe { ExpandEnvironmentStringsW(template.as_ptr(), expanded.as_mut_ptr(), required) };
+    if written == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if written > required {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Expanded browser command grew",
+        ));
+    }
+    Ok(expanded)
+}
+
+fn split_command(command: &[u16]) -> io::Result<Vec<String>> {
+    let mut count = 0;
+    // CommandLineToArgvW returns a LocalAlloc block containing null-terminated arguments.
+    let arguments = unsafe { CommandLineToArgvW(command.as_ptr(), &mut count) };
+    if arguments.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    let parts = unsafe {
+        let parts = std::slice::from_raw_parts(arguments, count as usize)
+            .iter()
+            .map(|&argument| {
+                let length = (0..)
+                    .take_while(|offset| *argument.add(*offset) != 0)
+                    .count();
+                String::from_utf16_lossy(std::slice::from_raw_parts(argument, length))
+            })
+            .collect();
+        LocalFree(arguments.cast());
+        parts
     };
-    // Supplying the selected ProgID lets the shell apply that browser's registered command.
-    (unsafe { ShellExecuteExW(&mut options) } != 0)
-        .then_some(())
-        .ok_or(())
+    Ok(parts)
+}
+
+fn insert_url(template: &str, url: &str, used_url: &mut bool) -> String {
+    let mut result = String::new();
+    let mut remaining = template;
+    while let Some((prefix, suffix)) = remaining.split_once('%') {
+        result.push_str(prefix);
+        if let Some(rest) = suffix.strip_prefix(['1', 'l', 'L']) {
+            result.push_str(url);
+            *used_url = true;
+            remaining = rest;
+        } else {
+            result.push('%');
+            remaining = suffix;
+        }
+    }
+    result.push_str(remaining);
+    result
 }
 
 pub fn open_settings() -> Result<(), ()> {
@@ -169,6 +243,18 @@ mod tests {
         fn drop(&mut self) {
             let _ = self.root.delete_subkey_all(&self.path);
         }
+    }
+
+    #[test]
+    fn inserts_the_url_without_reinterpreting_percent_sequences() {
+        let mut used = false;
+        let url = "https://example.com/test%20page?q=%25L&x=1";
+        assert_eq!(
+            insert_url("--url=%L", url, &mut used),
+            format!("--url={url}")
+        );
+        assert!(used);
+        assert_eq!(insert_url("--other=20%", url, &mut false), "--other=20%");
     }
 
     #[test]
