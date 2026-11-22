@@ -326,12 +326,15 @@ fn recover_picker(app: &AppHandle, label: &str) {
     let (show_next, waiting) = {
         let mut pending = pending.lock().unwrap();
         let show_next = pending.defer(label);
-        (show_next, pending.deferred_count())
+        let waiting = pending
+            .get(MAIN_WINDOW)
+            .map(|link| (link.id, pending.deferred_count()));
+        (show_next, waiting)
     };
     if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
         if show_next {
             show_main_picker(&window);
-        } else {
+        } else if let Some(waiting) = waiting {
             let _ = window.emit("picker-deferred", waiting);
         }
     }

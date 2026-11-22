@@ -21,6 +21,7 @@ const isMainWindow = getCurrentWindow().label === "main";
 let current: Picker | null = null;
 let requestNumber = 0;
 let busy = false;
+let deferred: [id: number, count: number] | undefined;
 
 function element<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -45,6 +46,9 @@ async function refresh() {
   try {
     const view = await invoke<Picker | null>("picker_state");
     if (request !== requestNumber) return;
+    if (view && deferred?.[0] === view.id) {
+      view.waiting = Math.max(view.waiting, deferred[1]);
+    }
     current = view;
     busy = false;
     render();
@@ -222,9 +226,13 @@ if (isMainWindow) {
 const ready = isMainWindow
   ? Promise.all([
     listen("main-picker-changed", () => void refresh()),
-    listen<number>("picker-deferred", ({ payload }) => {
+    listen<[number, number]>("picker-deferred", ({ payload }) => {
+      const [id, count] = payload;
+      deferred = payload;
+      if (current?.id !== id) return;
+      current.waiting = Math.max(current.waiting, count);
       const waiting = app.querySelector(".waiting");
-      if (waiting) waiting.textContent = waitingMessage(payload);
+      if (waiting) waiting.textContent = waitingMessage(current.waiting);
     }),
   ])
   : Promise.resolve();

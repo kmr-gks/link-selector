@@ -18,7 +18,7 @@ const link = {
   ],
 };
 let emitQueueChange: () => void;
-let emitDeferred: (count: number) => void;
+let emitDeferred: (id: number, count: number) => void;
 let picker: typeof link | null;
 let failedLaunch: boolean;
 
@@ -32,7 +32,7 @@ beforeAll(async () => {
     if (event === "main-picker-changed") {
       emitQueueChange = () => handler({ event, id: 1, payload: undefined });
     } else if (event === "picker-deferred") {
-      emitDeferred = (count) => handler({ event, id: 2, payload: count as never });
+      emitDeferred = (id, count) => handler({ event, id: 2, payload: [id, count] as never });
     }
     return () => {};
   });
@@ -40,7 +40,7 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
-  picker = link;
+  picker = { ...link };
   failedLaunch = false;
   request.mockReset();
   request.mockImplementation(async (command) => {
@@ -54,7 +54,7 @@ beforeEach(async () => {
 
 describe("browser picker", () => {
   it("announces recovered links and displays the next link in the main window", async () => {
-    emitDeferred(2);
+    emitDeferred(7, 2);
     expect(document.querySelector(".waiting")?.textContent).toContain("2 件");
     expect(document.querySelector(".link-url")?.textContent).toBe(link.url);
     picker = { ...link, id: 8, url: "https://example.com/next", waiting: 1 };
@@ -64,6 +64,24 @@ describe("browser picker", () => {
       expect(document.querySelector(".waiting")?.textContent).toContain("1 件");
     });
   });
+  it("keeps a notification that arrives before the initial response renders", async () => {
+    let resolvePicker!: (value: typeof link) => void;
+    const response = new Promise<typeof link>((resolve) => { resolvePicker = resolve; });
+    request.mockImplementation(async (command) => {
+      if (command === "picker_state") return response as never;
+      return undefined as never;
+    });
+    emitQueueChange();
+    emitDeferred(9, 3);
+    resolvePicker({ ...link, id: 9, url: "https://example.com/recovered", waiting: 0 });
+    await vi.waitFor(() => {
+      expect(document.querySelector(".link-url")?.textContent).toBe("https://example.com/recovered");
+      expect(document.querySelector(".waiting")?.textContent).toContain("3 件");
+    });
+    emitDeferred(7, 4);
+    expect(document.querySelector(".waiting")?.textContent).toContain("3 件");
+  });
+
   it("shows the link and opens the browser assigned to a number key", async () => {
     expect(document.querySelector(".subtitle")?.textContent).toBe(link.url);
     key("2");
