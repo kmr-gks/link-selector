@@ -16,6 +16,10 @@ use std::{
 use tauri::Url;
 
 pub fn browser_choices(url: &Url, own_identifier: &str) -> Vec<BrowserChoice> {
+    autoreleasepool(|_| collect_browser_choices(url, own_identifier))
+}
+
+fn collect_browser_choices(url: &Url, own_identifier: &str) -> Vec<BrowserChoice> {
     // Look for browsers even for local HTML, which is also associated with editors.
     let address = if url.scheme() == "file" {
         "https://example.invalid/"
@@ -135,4 +139,21 @@ pub fn copy(url: &str) -> Result<(), ()> {
     let copied =
         unsafe { clipboard.setString_forType(&NSString::from_str(url), NSPasteboardTypeString) };
     copied.then_some(()).ok_or(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn browser_lookup_returns_owned_choices_from_a_worker_thread() {
+        let choices = std::thread::spawn(|| {
+            browser_choices(&Url::parse("https://example.invalid/").unwrap(), "")
+        })
+        .join()
+        .unwrap();
+        assert!(choices
+            .iter()
+            .all(|choice| !choice.id.is_empty() && !choice.name.is_empty()));
+    }
 }
