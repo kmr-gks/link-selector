@@ -87,6 +87,7 @@ jobs:
           name: ${{ matrix.platform }}
           path: release/*
           if-no-files-found: error
+          overwrite: true
 
   release:
     if: github.event_name == 'push' && github.ref_type == 'tag'
