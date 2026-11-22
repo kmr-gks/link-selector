@@ -1,12 +1,16 @@
 function Invoke-WindowsTestProcess {
     param(
         [Parameter(Mandatory)] [string]$Executable,
-        [Parameter(Mandatory)] [string[]]$Arguments,
+        [Parameter(Mandatory)] [string]$CommandLine,
         [Parameter(Mandatory)] [int]$TimeoutSeconds
     )
 
-    $process = Start-Process -FilePath $Executable -ArgumentList $Arguments `
-        -WorkingDirectory (Get-Location).Path -NoNewWindow -PassThru
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $Executable
+    $startInfo.Arguments = $CommandLine
+    $startInfo.WorkingDirectory = (Get-Location).Path
+    $startInfo.UseShellExecute = $false
+    $process = [System.Diagnostics.Process]::Start($startInfo)
     try {
         if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
             if (-not $process.HasExited) {

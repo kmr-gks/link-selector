@@ -19,8 +19,7 @@ try {
     $package = $installed[0]
     $env:LINK_SELECTOR_TEST_MSIX = $package.PackageFamilyName
     $cargo = (Get-Command cargo.exe -CommandType Application).Source
-    $cargoArguments = @('+stable', 'test', '--manifest-path', 'src-tauri/Cargo.toml', '--locked',
-        'selected_firefox_msix_receives_the_link', '--', '--ignored')
+    $cargoArguments = '+stable test --manifest-path src-tauri/Cargo.toml --locked selected_firefox_msix_receives_the_link -- --ignored'
     $exitCode = Invoke-WindowsTestProcess $cargo $cargoArguments 120
     if ($exitCode -ne 0) { throw "Firefox MSIX link activation failed with exit code $exitCode" }
 } finally {
