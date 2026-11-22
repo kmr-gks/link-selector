@@ -5,7 +5,6 @@ import "./style.css";
 interface Browser {
   id: string;
   name: string;
-  icon: string | null;
 }
 
 interface Picker {
@@ -131,16 +130,13 @@ function render() {
   const { id, url, browsers } = current;
   const list = element("ul", "browsers");
   list.setAttribute("aria-label", "インストール済みブラウザ");
+  const icons = new Map<string, HTMLElement>();
   for (const [index, browser] of browsers.entries()) {
     const row = element("li", "");
     const choice = button("", "browser", () => void processLink("open_browser", browser));
-    const icon = browser.icon ? element("img", "browser-icon") : element("span", "browser-icon", "↗");
-    if (icon instanceof HTMLImageElement) {
-      icon.src = browser.icon!;
-      icon.alt = "";
-    } else {
-      icon.setAttribute("aria-hidden", "true");
-    }
+    const icon = element("span", "browser-icon", "↗");
+    icon.setAttribute("aria-hidden", "true");
+    icons.set(browser.id, icon);
     choice.append(icon, element("span", "browser-name", browser.name));
     if (index < 9) {
       const shortcut = element("kbd", "", String(index + 1));
@@ -163,6 +159,28 @@ function render() {
     footer,
   );
   fitPicker(browsers.length ? list : undefined);
+  if (!isWindows && icons.size > 0) {
+    // Allow a paint with the browser names and buttons before decoding icons.
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (current?.id === id) void loadIcons(id, icons);
+    }));
+  }
+}
+
+async function loadIcons(id: number, placeholders: Map<string, HTMLElement>) {
+  try {
+    const icons = await invoke<Record<string, string>>("picker_icons", { id });
+    for (const [browserId, source] of Object.entries(icons)) {
+      const placeholder = placeholders.get(browserId);
+      if (!placeholder?.isConnected) continue;
+      const icon = element("img", "browser-icon");
+      icon.src = source;
+      icon.alt = "";
+      placeholder.replaceWith(icon);
+    }
+  } catch {
+    // Keep the placeholder if native icon loading fails.
+  }
 }
 
 window.addEventListener("keydown", (event) => {

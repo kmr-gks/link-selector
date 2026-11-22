@@ -1,11 +1,17 @@
-use crate::{Browser, BrowserChoice};
+use crate::BrowserChoice;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use objc2::rc::autoreleasepool;
 use objc2_app_kit::{
     NSBitmapImageFileType, NSBitmapImageRep, NSPasteboard, NSPasteboardTypeString, NSWorkspace,
 };
 use objc2_foundation::{NSBundle, NSDictionary, NSString, NSURL};
-use std::{collections::HashSet, ffi::OsStr, path::Path, process::Command};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+    ffi::OsStr,
+    path::Path,
+    process::Command,
+};
 use tauri::Url;
 
 pub fn browser_choices(url: &Url, own_identifier: &str) -> Vec<BrowserChoice> {
@@ -53,29 +59,43 @@ pub fn browser_choices(url: &Url, own_identifier: &str) -> Vec<BrowserChoice> {
     browsers
 }
 
-pub fn browsers(url: &Url, own_identifier: &str) -> Vec<Browser> {
+thread_local! {
+    static ICONS: RefCell<HashMap<String, Option<String>>> = RefCell::default();
+}
+
+pub fn browser_icons(url: &Url, own_identifier: &str) -> HashMap<String, String> {
     let workspace = NSWorkspace::sharedWorkspace();
-    browser_choices(url, own_identifier)
-        .into_iter()
-        .map(|choice| {
-            let icon = autoreleasepool(|_| {
-                let icon = workspace.iconForFile(&NSString::from_str(&choice.id));
-                icon.TIFFRepresentation()
-                    .and_then(|tiff| NSBitmapImageRep::imageRepWithData(&tiff))
-                    .and_then(|bitmap| {
-                        // An empty dictionary requests the PNG encoder's default properties.
-                        unsafe {
-                            bitmap.representationUsingType_properties(
-                                NSBitmapImageFileType::PNG,
-                                &NSDictionary::new(),
-                            )
-                        }
-                    })
-                    .map(|png| format!("data:image/png;base64,{}", STANDARD.encode(png.to_vec())))
-            });
-            Browser { choice, icon }
-        })
-        .collect()
+    ICONS.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        browser_choices(url, own_identifier)
+            .into_iter()
+            .filter_map(|choice| {
+                let icon = cache
+                    .entry(choice.id.clone())
+                    .or_insert_with(|| browser_icon(&workspace, &choice.id));
+                icon.clone().map(|icon| (choice.id, icon))
+            })
+            .collect()
+    })
+}
+
+fn browser_icon(workspace: &NSWorkspace, path: &str) -> Option<String> {
+    autoreleasepool(|_| {
+        let icon = workspace.iconForFile(&NSString::from_str(path));
+        let tiff = icon.TIFFRepresentation()?;
+        let bitmap = NSBitmapImageRep::imageRepWithData(&tiff)?;
+        // An empty dictionary requests the PNG encoder's default properties.
+        let png = unsafe {
+            bitmap.representationUsingType_properties(
+                NSBitmapImageFileType::PNG,
+                &NSDictionary::new(),
+            )
+        }?;
+        Some(format!(
+            "data:image/png;base64,{}",
+            STANDARD.encode(png.to_vec())
+        ))
+    })
 }
 
 pub fn open_in_browser(url: &Url, browser: &BrowserChoice) -> Result<(), ()> {

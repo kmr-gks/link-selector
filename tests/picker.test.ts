@@ -11,8 +11,8 @@ const link = {
   id: 7,
   url: "https://example.com/path?x=1&y=2",
   browsers: [
-    { id: "browser-one", name: "Browser One", icon: null },
-    { id: "browser-two", name: "Browser Two", icon: null },
+    { id: "browser-one", name: "Browser One" },
+    { id: "browser-two", name: "Browser Two" },
   ],
 };
 let emitQueueChange: () => void;
@@ -50,6 +50,27 @@ describe("browser picker", () => {
     expect(document.querySelector(".subtitle")?.textContent).toBe(link.url);
     key("2");
     await vi.waitFor(() => expect(request).toHaveBeenCalledWith("open_browser", { id: 7, browserId: "browser-two" }));
+  });
+
+  it("shows working browser buttons while the icons are still loading", async () => {
+    let completeIcons!: (icons: Record<string, string>) => void;
+    const pendingIcons = new Promise<Record<string, string>>((resolve) => {
+      completeIcons = resolve;
+    });
+    request.mockImplementation(async (command) => {
+      if (command === "picker_state") return picker as never;
+      if (command === "picker_icons") return pendingIcons as never;
+      return undefined as never;
+    });
+    emitQueueChange();
+    await vi.waitFor(() => expect(request).toHaveBeenCalledWith("picker_icons", { id: 7 }));
+    expect(document.querySelector(".browser-icon")).toBeInstanceOf(HTMLSpanElement);
+    key("1");
+    await vi.waitFor(() => expect(request).toHaveBeenCalledWith("open_browser", { id: 7, browserId: "browser-one" }));
+
+    const source = "data:image/png;base64,iVBORw0KGgo=";
+    completeIcons({ "browser-one": source });
+    await vi.waitFor(() => expect(document.querySelector<HTMLImageElement>("img.browser-icon")?.src).toBe(source));
   });
 
   it("keeps the full URL in a keyboard-accessible region", async () => {

@@ -1,4 +1,4 @@
-use crate::{Browser, BrowserChoice};
+use crate::BrowserChoice;
 use std::{collections::HashSet, io, process::Command};
 use tauri::Url;
 use windows_sys::Win32::{
@@ -100,11 +100,8 @@ fn add_choice(
     choices.push(BrowserChoice { id, name });
 }
 
-pub fn browsers(url: &Url, own_identifier: &str) -> Vec<Browser> {
-    browser_choices(url, own_identifier)
-        .into_iter()
-        .map(|choice| Browser { choice, icon: None })
-        .collect()
+pub fn browser_icons(_: &Url, _: &str) -> std::collections::HashMap<String, String> {
+    std::collections::HashMap::new()
 }
 
 fn registered_command(id: &str) -> io::Result<String> {
