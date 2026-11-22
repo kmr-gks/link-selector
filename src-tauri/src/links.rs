@@ -43,6 +43,7 @@ pub struct Link {
     pub url: Url,
     pub presented: Option<Dimensions>,
     pub slot: usize,
+    pub launching: bool,
 }
 
 impl PendingLinks {
@@ -66,6 +67,7 @@ impl PendingLinks {
                     url,
                     presented: None,
                     slot,
+                    launching: false,
                 },
             );
             windows.push(window);
@@ -100,6 +102,26 @@ impl PendingLinks {
         }
         *last = size;
         true
+    }
+
+    pub fn begin_launch(&mut self, window: &str, id: u64) -> bool {
+        let Some(link) = self.by_window.get_mut(window).filter(|link| link.id == id) else {
+            return false;
+        };
+        !std::mem::replace(&mut link.launching, true)
+    }
+
+    pub fn launch_failed(&mut self, window: &str, id: u64) {
+        if let Some(link) = self.by_window.get_mut(window).filter(|link| link.id == id) {
+            link.launching = false;
+        }
+    }
+
+    pub fn cancel(&mut self, window: &str, id: u64) -> Option<Link> {
+        if self.get_with_id(window, id)?.launching {
+            return None;
+        }
+        self.finish(window, id)
     }
 
     pub fn finish(&mut self, window: &str, id: u64) -> Option<Link> {
@@ -167,6 +189,21 @@ mod tests {
     }
 
     #[cfg(target_os = "macos")]
+    #[test]
+    fn cancellation_and_launch_claim_the_same_link_exclusively() {
+        let address = url("https://example.com/");
+        let mut links = PendingLinks::default();
+        links.add([address.clone()]);
+        assert!(links.cancel(MAIN_WINDOW, 1).is_some());
+        links.add([address]);
+        assert!(!links.begin_launch(MAIN_WINDOW, 1));
+        assert!(links.begin_launch(MAIN_WINDOW, 2));
+        assert!(!links.begin_launch(MAIN_WINDOW, 2));
+        assert!(links.cancel(MAIN_WINDOW, 2).is_none());
+        links.launch_failed(MAIN_WINDOW, 2);
+        assert!(links.cancel(MAIN_WINDOW, 2).is_some());
+    }
+
     #[test]
     fn delivers_all_cold_start_documents_only_after_setup() {
         let mut startup = StartupLinks::default();

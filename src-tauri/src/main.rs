@@ -93,43 +93,65 @@ async fn open_browser(
         .into_iter()
         .find(|browser| browser.id == browser_id)
         .ok_or("ブラウザが見つかりませんでした。別のブラウザを選んでください。")?;
-    let launch_error = || {
-        format!(
-            "{} を開けませんでした。別のブラウザを選んでください。",
-            browser.name
-        )
-    };
-    #[cfg(target_os = "windows")]
-    if let Some(family) = browser.package_family.as_ref() {
-        let owner = window.hwnd().map_err(|_| launch_error())?.0 as isize;
-        let family = family.clone();
-        tauri::async_runtime::spawn_blocking(move || {
-            platform::open_packaged_browser(&link.url, &family, Some(owner))
+    let worker_window = window.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let owner_error = || {
+            format!(
+                "{} を開けませんでした。別のブラウザを選んでください。",
+                browser.name
+            )
+        };
+        #[cfg(target_os = "windows")]
+        let owner = if browser.package_family.is_some() {
+            Some(worker_window.hwnd().map_err(|_| owner_error())?.0 as isize)
+        } else {
+            None
+        };
+        let pending = worker_window.state::<Mutex<PendingLinks>>();
+        if !pending
+            .lock()
+            .unwrap()
+            .begin_launch(worker_window.label(), id)
+        {
+            return Err("このリンクは処理済みです。".to_owned());
+        }
+        #[cfg(target_os = "windows")]
+        let outcome = if let Some(family) = browser.package_family.as_ref() {
+            platform::open_packaged_browser(&link.url, family, owner)
+        } else {
+            platform::open_in_browser(&link.url, &browser)
+        };
+        #[cfg(target_os = "macos")]
+        let outcome = platform::open_in_browser(&link.url, &browser);
+        outcome.map_err(|_| {
+            pending
+                .lock()
+                .unwrap()
+                .launch_failed(worker_window.label(), id);
+            owner_error()
         })
-        .await
-        .map_err(|_| launch_error())?
-        .map_err(|_| launch_error())?;
-    } else {
-        platform::open_in_browser(&link.url, &browser).map_err(|_| launch_error())?;
-    }
-    #[cfg(target_os = "macos")]
-    platform::open_in_browser(&link.url, &browser).map_err(|_| launch_error())?;
+    })
+    .await
+    .map_err(|_| "ブラウザを起動できませんでした。".to_owned())??;
 
     let (completed, mut result) = tauri::async_runtime::channel(1);
     window
         .clone()
         .run_on_main_thread(move || {
-            finish_link(&window, id);
+            finish_link(&window, id, false);
             let _ = completed.try_send(());
         })
-        .map_err(|_| launch_error())?;
-    result.recv().await.ok_or_else(launch_error)?;
+        .map_err(|_| "選択画面を閉じられませんでした。".to_owned())?;
+    result
+        .recv()
+        .await
+        .ok_or("選択画面を閉じられませんでした。")?;
     Ok(())
 }
 
 #[tauri::command]
 fn cancel_link(window: WebviewWindow, id: u64) {
-    finish_link(&window, id);
+    finish_link(&window, id, true);
 }
 
 #[tauri::command]
@@ -266,12 +288,17 @@ fn save_picker_size(app: &AppHandle) {
     }
 }
 
-fn finish_link(window: &WebviewWindow, id: u64) {
+fn finish_link(window: &WebviewWindow, id: u64, cancel: bool) {
     let main = window.label() == MAIN_WINDOW;
     let show_next = {
         let pending = window.state::<Mutex<PendingLinks>>();
         let mut pending = pending.lock().unwrap();
-        if pending.finish(window.label(), id).is_none() {
+        let finished = if cancel {
+            pending.cancel(window.label(), id)
+        } else {
+            pending.finish(window.label(), id)
+        };
+        if finished.is_none() {
             return;
         }
         main && pending.show_next_deferred()
@@ -506,24 +533,20 @@ fn main() {
                 }
             }
             WindowEvent::CloseRequested { api, .. } => {
-                let main = window.label() == MAIN_WINDOW;
-                if main {
-                    api.prevent_close();
-                }
+                api.prevent_close();
                 if let Some(webview) = window.app_handle().get_webview_window(window.label()) {
                     let state = window.state::<Mutex<PendingLinks>>();
-                    if main {
-                        let id = state.lock().unwrap().get(MAIN_WINDOW).map(|link| link.id);
-                        if let Some(id) = id {
-                            finish_link(&webview, id);
-                        } else {
-                            let _ = webview.hide();
-                        }
+                    let id = state
+                        .lock()
+                        .unwrap()
+                        .get(window.label())
+                        .map(|link| link.id);
+                    if let Some(id) = id {
+                        finish_link(&webview, id, true);
+                    } else if window.label() == MAIN_WINDOW {
+                        let _ = webview.hide();
                     } else {
-                        let link = state.lock().unwrap().remove(window.label());
-                        if link.is_some() {
-                            save_picker_size(window.app_handle());
-                        }
+                        let _ = webview.destroy();
                     }
                 }
             }
@@ -538,7 +561,7 @@ fn main() {
         })
         .build(tauri::generate_context!())
         .expect("failed to build Link Selector")
-        .run(|app, event| match event {
+        .run(move |app, event| match event {
             RunEvent::ExitRequested { .. } => save_picker_size(app),
             #[cfg(target_os = "macos")]
             RunEvent::Opened { urls } => {
