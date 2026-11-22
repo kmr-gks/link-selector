@@ -385,6 +385,9 @@ fn main() {
     builder
         .manage(Mutex::new(PendingLinks::default()))
         .setup(|app| {
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
             let file = app
                 .path()
                 .app_config_dir()
