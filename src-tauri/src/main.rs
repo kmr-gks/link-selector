@@ -33,16 +33,27 @@ struct Picker {
     id: u64,
     url: String,
     browsers: Vec<BrowserChoice>,
+    waiting: usize,
 }
 
 #[tauri::command]
 fn picker_state(window: WebviewWindow, state: State<'_, Mutex<PendingLinks>>) -> Option<Picker> {
-    let link = state.lock().unwrap().get(window.label()).cloned()?;
+    let (link, waiting) = {
+        let pending = state.lock().unwrap();
+        let link = pending.get(window.label()).cloned()?;
+        let waiting = if window.label() == MAIN_WINDOW {
+            pending.deferred_count()
+        } else {
+            0
+        };
+        (link, waiting)
+    };
     let app = window.app_handle();
     Some(Picker {
         id: link.id,
         url: link.url.to_string(),
         browsers: platform::browser_choices(&link.url, &app.config().identifier),
+        waiting,
     })
 }
 
@@ -229,20 +240,46 @@ fn save_picker_size(app: &AppHandle) {
 }
 
 fn finish_link(window: &WebviewWindow, id: u64) {
-    let link = window
-        .state::<Mutex<PendingLinks>>()
-        .lock()
-        .unwrap()
-        .finish(window.label(), id);
-    if link.is_none() {
-        return;
-    }
+    let main = window.label() == MAIN_WINDOW;
+    let show_next = {
+        let pending = window.state::<Mutex<PendingLinks>>();
+        let mut pending = pending.lock().unwrap();
+        if pending.finish(window.label(), id).is_none() {
+            return;
+        }
+        main && pending.show_next_deferred()
+    };
     save_picker_size(window.app_handle());
-    if window.label() == MAIN_WINDOW {
-        let _ = window.hide();
-        let _ = window.emit("main-picker-changed", ());
+    if main {
+        if show_next {
+            show_main_picker(window);
+        } else {
+            let _ = window.hide();
+            let _ = window.emit("main-picker-changed", ());
+        }
     } else {
         let _ = window.destroy();
+    }
+}
+
+fn show_main_picker(window: &WebviewWindow) {
+    let _ = window.emit("main-picker-changed", ());
+    show_window(window);
+}
+
+fn recover_picker(app: &AppHandle, label: &str) {
+    let pending = app.state::<Mutex<PendingLinks>>();
+    let (show_next, waiting) = {
+        let mut pending = pending.lock().unwrap();
+        let show_next = pending.defer(label);
+        (show_next, pending.deferred_count())
+    };
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
+        if show_next {
+            show_main_picker(&window);
+        } else {
+            let _ = window.emit("picker-deferred", waiting);
+        }
     }
 }
 
@@ -255,8 +292,7 @@ fn receive_links(app: &AppHandle, urls: Vec<Url>) -> bool {
     if additional.peek().is_some_and(|label| label == MAIN_WINDOW) {
         additional.next();
         if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
-            let _ = window.emit("main-picker-changed", ());
-            show_window(&window);
+            show_main_picker(&window);
         }
     }
 
@@ -267,11 +303,11 @@ fn receive_links(app: &AppHandle, urls: Vec<Url>) -> bool {
         tauri::async_runtime::spawn_blocking(move || {
             for label in additional {
                 if let Err(error) = create_picker(&app, &label) {
-                    app.state::<Mutex<PendingLinks>>()
-                        .lock()
-                        .unwrap()
-                        .remove(&label);
                     eprintln!("Unable to create picker window: {error}");
+                    let app = app.clone();
+                    let _ = app
+                        .clone()
+                        .run_on_main_thread(move || recover_picker(&app, &label));
                 }
             }
         });

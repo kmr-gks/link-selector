@@ -12,6 +12,7 @@ interface Picker {
   id: number;
   url: string;
   browsers: Browser[];
+  waiting: number;
 }
 
 const isWindows = navigator.userAgent.includes("Windows");
@@ -78,6 +79,10 @@ async function copyLink(id: number) {
 function setStatus(message: string) {
   const status = document.querySelector<HTMLElement>(".status");
   if (status) status.textContent = message;
+}
+
+function waitingMessage(waiting: number) {
+  return waiting > 0 ? `追加の画面を開けなかったリンク ${waiting} 件を、この画面で順番に表示します。` : "";
 }
 
 function openSettings() {
@@ -159,9 +164,12 @@ function render() {
     button("リンクをコピー", "secondary", () => void copyLink(id)),
     button("キャンセル", "secondary", () => void processLink("cancel_link")),
   );
+  const waiting = element("p", "waiting", waitingMessage(current.waiting));
+  waiting.setAttribute("role", "status");
   app.replaceChildren(
     heading("ブラウザを選択", url, true),
     browsers.length ? list : element("p", "instructions", "このリンクを開けるブラウザが見つかりませんでした。"),
+    waiting,
     status,
     footer,
   );
@@ -212,6 +220,12 @@ if (isMainWindow) {
   app.append(status);
 }
 const ready = isMainWindow
-  ? listen("main-picker-changed", () => void refresh())
+  ? Promise.all([
+    listen("main-picker-changed", () => void refresh()),
+    listen<number>("picker-deferred", ({ payload }) => {
+      const waiting = app.querySelector(".waiting");
+      if (waiting) waiting.textContent = waitingMessage(payload);
+    }),
+  ])
   : Promise.resolve();
 void ready.then(refresh).catch(() => setStatus("選択画面を初期化できませんでした。"));

@@ -11,12 +11,14 @@ const request = vi.mocked(invoke);
 const link = {
   id: 7,
   url: "https://example.com/path?x=1&y=2",
+  waiting: 0,
   browsers: [
     { id: "browser-one", name: "Browser One" },
     { id: "browser-two", name: "Browser Two" },
   ],
 };
 let emitQueueChange: () => void;
+let emitDeferred: (count: number) => void;
 let picker: typeof link | null;
 let failedLaunch: boolean;
 
@@ -27,7 +29,11 @@ function key(name: string, options: KeyboardEventInit = {}) {
 beforeAll(async () => {
   document.body.innerHTML = '<main id="app"></main>';
   vi.mocked(listen).mockImplementation(async (event, handler) => {
-    emitQueueChange = () => handler({ event, id: 1, payload: undefined });
+    if (event === "main-picker-changed") {
+      emitQueueChange = () => handler({ event, id: 1, payload: undefined });
+    } else if (event === "picker-deferred") {
+      emitDeferred = (count) => handler({ event, id: 2, payload: count as never });
+    }
     return () => {};
   });
   await import("../src/main");
@@ -47,6 +53,17 @@ beforeEach(async () => {
 });
 
 describe("browser picker", () => {
+  it("announces recovered links and displays the next link in the main window", async () => {
+    emitDeferred(2);
+    expect(document.querySelector(".waiting")?.textContent).toContain("2 件");
+    expect(document.querySelector(".link-url")?.textContent).toBe(link.url);
+    picker = { ...link, id: 8, url: "https://example.com/next", waiting: 1 };
+    emitQueueChange();
+    await vi.waitFor(() => {
+      expect(document.querySelector(".link-url")?.textContent).toBe(picker?.url);
+      expect(document.querySelector(".waiting")?.textContent).toContain("1 件");
+    });
+  });
   it("shows the link and opens the browser assigned to a number key", async () => {
     expect(document.querySelector(".subtitle")?.textContent).toBe(link.url);
     key("2");

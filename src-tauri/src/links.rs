@@ -1,5 +1,5 @@
 use crate::picker_size::Dimensions;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use tauri::Url;
 
 pub const MAIN_WINDOW: &str = "main";
@@ -8,6 +8,7 @@ pub const MAIN_WINDOW: &str = "main";
 pub struct PendingLinks {
     next_id: u64,
     by_window: HashMap<String, Link>,
+    deferred: VecDeque<Link>,
 }
 
 #[derive(Clone)]
@@ -82,6 +83,31 @@ impl PendingLinks {
 
     pub fn remove(&mut self, window: &str) -> Option<Link> {
         self.by_window.remove(window)
+    }
+
+    pub fn defer(&mut self, window: &str) -> bool {
+        let Some(link) = self.remove(window) else {
+            return false;
+        };
+        self.deferred.push_back(link);
+        self.show_next_deferred()
+    }
+
+    pub fn show_next_deferred(&mut self) -> bool {
+        if self.by_window.contains_key(MAIN_WINDOW) {
+            return false;
+        }
+        let Some(mut link) = self.deferred.pop_front() else {
+            return false;
+        };
+        link.slot = 0;
+        link.presented = None;
+        self.by_window.insert(MAIN_WINDOW.to_owned(), link);
+        true
+    }
+
+    pub fn deferred_count(&self) -> usize {
+        self.deferred.len()
     }
 
     pub fn windows(&self) -> impl Iterator<Item = (&String, &Link)> {
@@ -176,6 +202,36 @@ mod tests {
         links.finish("picker-2", 2).unwrap();
         links.finish(MAIN_WINDOW, 1).unwrap();
         assert_eq!(size.preferred, Some(second));
+    }
+
+    #[test]
+    fn failed_windows_keep_their_original_links_in_the_main_picker_queue() {
+        let mut links = PendingLinks::default();
+        let first = url("https://example.com/first");
+        let second = url("https://example.com/second?q=a%20b");
+        let third = url("https://example.com/third");
+        links.add([first, second.clone(), third.clone()]);
+        assert!(!links.defer("picker-2"));
+        assert!(!links.defer("picker-3"));
+        assert!(!links.defer("picker-3"));
+        assert_eq!(links.deferred_count(), 2);
+        links.finish(MAIN_WINDOW, 1).unwrap();
+        assert!(links.show_next_deferred());
+        assert_eq!(links.get_with_id(MAIN_WINDOW, 2).unwrap().url, second);
+        links.finish(MAIN_WINDOW, 2).unwrap();
+        assert!(links.show_next_deferred());
+        assert_eq!(links.get_with_id(MAIN_WINDOW, 3).unwrap().url, third);
+        assert_eq!(links.deferred_count(), 0);
+    }
+
+    #[test]
+    fn immediately_recovers_a_failed_window_if_the_main_picker_is_free() {
+        let mut links = PendingLinks::default();
+        let address = url("https://example.com/");
+        links.add([address.clone(), address.clone()]);
+        links.finish(MAIN_WINDOW, 1).unwrap();
+        assert!(links.defer("picker-2"));
+        assert_eq!(links.get_with_id(MAIN_WINDOW, 2).unwrap().url, address);
     }
 
     #[cfg(target_os = "macos")]
