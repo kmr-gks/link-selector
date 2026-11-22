@@ -146,8 +146,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn browser_lookup_returns_owned_choices_from_a_worker_thread() {
+    fn browser_lookup_does_not_leak_cocoa_objects_on_a_worker() {
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "platform::tests::browser_lookup_in_worker",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("OBJC_DEBUG_MISSING_POOLS", "YES")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stdout}\n{stderr}");
+        let thread = stdout
+            .lines()
+            .find_map(|line| line.strip_prefix("lookup thread: "))
+            .unwrap();
+        assert!(
+            !stderr.contains(&format!("MISSING POOLS: ({thread})")),
+            "{stderr}"
+        );
+    }
+
+    #[test]
+    #[ignore = "runs in a child process with Objective-C diagnostics enabled"]
+    fn browser_lookup_in_worker() {
+        extern "C" {
+            fn pthread_self() -> *const std::ffi::c_void;
+        }
         let choices = std::thread::spawn(|| {
+            println!("lookup thread: {:p}", unsafe { pthread_self() });
             browser_choices(&Url::parse("https://example.invalid/").unwrap(), "")
         })
         .join()
