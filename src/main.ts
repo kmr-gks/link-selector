@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import "./style.css";
 
 interface Browser {
@@ -15,6 +16,7 @@ interface Picker {
 
 const isWindows = navigator.userAgent.includes("Windows");
 const app = document.querySelector<HTMLElement>("#app")!;
+const isMainWindow = getCurrentWindow().label === "main";
 let current: Picker | null = null;
 let requestNumber = 0;
 let busy = false;
@@ -104,7 +106,7 @@ function fitPicker(list?: HTMLUListElement) {
   const contentHeight = list
     ? app.scrollHeight + list.scrollHeight - list.clientHeight
     : current ? app.scrollHeight : null;
-  void invoke("fit_picker", { contentHeight }).catch(() => {
+  void invoke("fit_picker", { contentHeight, id: current?.id }).catch(() => {
     // The layout still allows scrolling if the OS cannot resize the window.
   });
 }
@@ -115,6 +117,11 @@ function render() {
   const status = element("p", "status");
   status.setAttribute("role", "status");
   if (!current) {
+    if (!isMainWindow) {
+      status.textContent = "リンクを読み込めませんでした。";
+      app.replaceChildren(status);
+      return;
+    }
     app.replaceChildren(
       heading("Link Selector", "リンクを開くブラウザを、その都度選べます。"),
       element("p", "instructions", isWindows
@@ -197,7 +204,14 @@ window.addEventListener("keydown", (event) => {
   }
 });
 
-render();
-void listen("link-queue-changed", () => void refresh())
-  .then(refresh)
-  .catch(() => setStatus("選択画面を初期化できませんでした。"));
+if (isMainWindow) {
+  render();
+} else {
+  const status = element("p", "status");
+  status.setAttribute("role", "status");
+  app.append(status);
+}
+const ready = isMainWindow
+  ? listen("main-picker-changed", () => void refresh())
+  : Promise.resolve();
+void ready.then(refresh).catch(() => setStatus("選択画面を初期化できませんでした。"));

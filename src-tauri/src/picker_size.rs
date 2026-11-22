@@ -22,7 +22,6 @@ impl Dimensions {
 #[derive(Default)]
 pub struct PickerSize {
     pub preferred: Option<Dimensions>,
-    pub presented: Option<Dimensions>,
     file: Option<PathBuf>,
 }
 
@@ -33,15 +32,15 @@ impl PickerSize {
             .and_then(|path| fs::read(path).ok())
             .and_then(|bytes| serde_json::from_slice::<Dimensions>(&bytes).ok())
             .filter(|size| size.is_valid());
-        Self {
-            preferred,
-            presented: None,
-            file,
-        }
+        Self { preferred, file }
     }
 
-    pub fn remember(&mut self, actual: Dimensions) -> io::Result<()> {
-        let Some(presented) = self.presented.take() else {
+    pub fn remember(
+        &mut self,
+        presented: Option<Dimensions>,
+        actual: Dimensions,
+    ) -> io::Result<()> {
+        let Some(presented) = presented else {
             return Ok(());
         };
         if !actual.is_valid() || !actual.differs_from(presented) {
@@ -72,24 +71,21 @@ mod tests {
             width: 460.0,
             height: 615.0,
         };
-        state.presented = Some(automatic);
-        state.remember(automatic).unwrap();
+        state.remember(Some(automatic), automatic).unwrap();
         assert!(!file.exists());
 
         let manual = Dimensions {
             width: 480.0,
             height: 550.0,
         };
-        state.presented = Some(automatic);
-        state.remember(manual).unwrap();
+        state.remember(Some(automatic), manual).unwrap();
         assert_eq!(PickerSize::load(Some(file.clone())).preferred, Some(manual));
 
         let clamped = Dimensions {
             width: 480.0,
             height: 450.0,
         };
-        state.presented = Some(clamped);
-        state.remember(clamped).unwrap();
+        state.remember(Some(clamped), clamped).unwrap();
         assert_eq!(PickerSize::load(Some(file)).preferred, Some(manual));
     }
 }

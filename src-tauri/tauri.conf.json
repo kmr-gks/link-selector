@@ -27,7 +27,8 @@
         {
           "identifier": "picker",
           "windows": [
-            "main"
+            "main",
+            "picker-*"
           ],
           "permissions": [
             "core:event:allow-listen",

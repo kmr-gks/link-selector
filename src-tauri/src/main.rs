@@ -3,6 +3,7 @@
     windows_subsystem = "windows"
 )]
 
+mod links;
 mod picker_size;
 #[cfg(target_os = "macos")]
 #[path = "macos.rs"]
@@ -10,16 +11,15 @@ mod platform;
 #[cfg(target_os = "windows")]
 #[path = "windows.rs"]
 mod platform;
-mod queue;
 
+use links::{Link, PendingLinks, MAIN_WINDOW};
 use picker_size::{Dimensions, PickerSize};
-use queue::PendingLinks;
 use serde::Serialize;
 use std::sync::Mutex;
 use tauri::RunEvent;
 use tauri::{
     AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, State, Url, WebviewWindow,
-    WindowEvent,
+    WebviewWindowBuilder, WindowEvent,
 };
 
 #[derive(Serialize)]
@@ -36,8 +36,9 @@ struct Picker {
 }
 
 #[tauri::command]
-fn picker_state(app: AppHandle, state: State<'_, Mutex<PendingLinks>>) -> Option<Picker> {
-    let link = state.lock().unwrap().current().cloned()?;
+fn picker_state(window: WebviewWindow, state: State<'_, Mutex<PendingLinks>>) -> Option<Picker> {
+    let link = state.lock().unwrap().get(window.label()).cloned()?;
+    let app = window.app_handle();
     Some(Picker {
         id: link.id,
         url: link.url.to_string(),
@@ -47,18 +48,23 @@ fn picker_state(app: AppHandle, state: State<'_, Mutex<PendingLinks>>) -> Option
 
 #[tauri::command]
 fn picker_icons(
-    app: AppHandle,
+    window: WebviewWindow,
     pending: State<'_, Mutex<PendingLinks>>,
     id: u64,
 ) -> std::collections::HashMap<String, String> {
-    let link = pending.lock().unwrap().current_with_id(id).cloned();
+    let link = pending
+        .lock()
+        .unwrap()
+        .get_with_id(window.label(), id)
+        .cloned();
+    let app = window.app_handle();
     link.map(|link| platform::browser_icons(&link.url, &app.config().identifier))
         .unwrap_or_default()
 }
 
 #[tauri::command]
 fn open_browser(
-    app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, Mutex<PendingLinks>>,
     id: u64,
     browser_id: String,
@@ -66,10 +72,10 @@ fn open_browser(
     let link = state
         .lock()
         .unwrap()
-        .current_with_id(id)
+        .get_with_id(window.label(), id)
         .cloned()
         .ok_or("このリンクは処理済みです。")?;
-    let path = platform::browser_choices(&link.url, &app.config().identifier)
+    let path = platform::browser_choices(&link.url, &window.app_handle().config().identifier)
         .into_iter()
         .find(|browser| browser.id == browser_id)
         .ok_or("ブラウザが見つかりませんでした。別のブラウザを選んでください。")?;
@@ -79,20 +85,24 @@ fn open_browser(
             path.name
         )
     })?;
-    finish_link(&app, id, false);
+    finish_link(&window, id);
     Ok(())
 }
 
 #[tauri::command]
-fn cancel_link(app: AppHandle, id: u64) {
-    finish_link(&app, id, true);
+fn cancel_link(window: WebviewWindow, id: u64) {
+    finish_link(&window, id);
 }
 
 #[tauri::command]
-fn copy_link(state: State<'_, Mutex<PendingLinks>>, id: u64) -> Result<(), String> {
+fn copy_link(
+    window: WebviewWindow,
+    state: State<'_, Mutex<PendingLinks>>,
+    id: u64,
+) -> Result<(), String> {
     let state = state.lock().unwrap();
     let link = state
-        .current_with_id(id)
+        .get_with_id(window.label(), id)
         .ok_or("このリンクは処理済みです。")?;
     platform::copy(link.url.as_str()).map_err(|_| "リンクをコピーできませんでした。".to_owned())
 }
@@ -103,8 +113,21 @@ fn open_settings() -> Result<(), String> {
 }
 
 #[tauri::command]
-fn fit_picker(window: WebviewWindow, content_height: Option<u32>) -> tauri::Result<()> {
-    if window.is_maximized()? || window.is_fullscreen()? {
+fn fit_picker(
+    window: WebviewWindow,
+    content_height: Option<u32>,
+    id: Option<u64>,
+) -> tauri::Result<()> {
+    if id.is_some_and(|id| {
+        window
+            .state::<Mutex<PendingLinks>>()
+            .lock()
+            .unwrap()
+            .get_with_id(window.label(), id)
+            .is_none()
+    }) || window.is_maximized()?
+        || window.is_fullscreen()?
+    {
         return Ok(());
     }
     let Some(monitor) = window.current_monitor()? else {
@@ -116,7 +139,7 @@ fn fit_picker(window: WebviewWindow, content_height: Option<u32>) -> tauri::Resu
         .app
         .windows
         .iter()
-        .find(|config| config.label == window.label())
+        .find(|config| config.label == MAIN_WINDOW)
         .map_or(0.0, |config| config.height);
     let inner = window.inner_size()?;
     let outer = window.outer_size()?;
@@ -154,7 +177,13 @@ fn fit_picker(window: WebviewWindow, content_height: Option<u32>) -> tauri::Resu
             window.set_position(target_position)?;
         }
     }
-    state.lock().unwrap().presented = content_height.map(|_| dimensions(target, scale));
+    if let Some(id) = id {
+        window
+            .state::<Mutex<PendingLinks>>()
+            .lock()
+            .unwrap()
+            .set_presented(window.label(), id, dimensions(target, scale));
+    }
     Ok(())
 }
 
@@ -166,66 +195,172 @@ fn dimensions(size: PhysicalSize<u32>, scale: f64) -> Dimensions {
     }
 }
 
-fn remember_picker_size(window: &WebviewWindow) {
-    let state = window.state::<Mutex<PickerSize>>();
-    if window.is_maximized().unwrap_or(true) || window.is_fullscreen().unwrap_or(true) {
-        state.lock().unwrap().presented = None;
+fn remember_picker_size(window: &WebviewWindow, link: &Link) {
+    if link.presented.is_none()
+        || window.is_maximized().unwrap_or(true)
+        || window.is_fullscreen().unwrap_or(true)
+    {
         return;
     }
     if let (Ok(size), Ok(scale)) = (window.inner_size(), window.scale_factor()) {
-        if let Err(error) = state.lock().unwrap().remember(dimensions(size, scale)) {
+        if let Err(error) = window
+            .state::<Mutex<PickerSize>>()
+            .lock()
+            .unwrap()
+            .remember(link.presented, dimensions(size, scale))
+        {
             eprintln!("Unable to save picker size: {error}");
         }
     }
 }
 
-fn finish_link(app: &AppHandle, id: u64, cancelled: bool) {
-    let state = app.state::<Mutex<PendingLinks>>();
-    let mut pending = state.lock().unwrap();
-    if !pending.finish(id) {
+fn finish_link(window: &WebviewWindow, id: u64) {
+    let link = window
+        .state::<Mutex<PendingLinks>>()
+        .lock()
+        .unwrap()
+        .finish(window.label(), id);
+    let Some(link) = link else {
         return;
+    };
+    remember_picker_size(window, &link);
+    if window.label() == MAIN_WINDOW {
+        let _ = window.hide();
+        let _ = window.emit("main-picker-changed", ());
+    } else {
+        let _ = window.destroy();
     }
-    let more_links = pending.current().is_some();
-    drop(pending);
-
-    if let Some(window) = app.get_webview_window("main") {
-        remember_picker_size(&window);
-        if !more_links {
-            let _ = window.hide();
-        } else if !cancelled {
-            let _ = window.set_focus();
-        }
-    }
-    let _ = app.emit("link-queue-changed", ());
 }
 
 fn receive_links(app: &AppHandle, urls: Vec<Url>) -> bool {
-    let state = app.state::<Mutex<PendingLinks>>();
-    let mut pending = state.lock().unwrap();
-    let was_empty = pending.current().is_none();
-    let added_links = pending.enqueue(urls);
-    drop(pending);
-    if added_links {
-        if was_empty {
-            let _ = app.emit("link-queue-changed", ());
-        }
-        show_window(app);
+    let windows = app.state::<Mutex<PendingLinks>>().lock().unwrap().add(urls);
+    if windows.is_empty() {
+        return false;
     }
-    added_links
+    let mut additional = windows.into_iter().peekable();
+    if additional.peek().is_some_and(|label| label == MAIN_WINDOW) {
+        additional.next();
+        if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
+            let _ = window.emit("main-picker-changed", ());
+            show_window(&window);
+        }
+    }
+
+    // WebView2 window construction must start outside Tauri's event callback.
+    let app = app.clone();
+    let additional: Vec<_> = additional.collect();
+    if !additional.is_empty() {
+        tauri::async_runtime::spawn_blocking(move || {
+            for label in additional {
+                if let Err(error) = create_picker(&app, &label) {
+                    app.state::<Mutex<PendingLinks>>()
+                        .lock()
+                        .unwrap()
+                        .remove(&label);
+                    eprintln!("Unable to create picker window: {error}");
+                }
+            }
+        });
+    }
+    true
 }
 
-fn show_window(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
-        if matches!(window.is_visible(), Ok(false)) {
-            let state = window.state::<Mutex<PickerSize>>();
-            let has_preferred_size = state.lock().unwrap().preferred.is_some();
-            if has_preferred_size {
-                let _ = fit_picker(window.clone(), None);
-            }
+fn create_picker(app: &AppHandle, label: &str) -> tauri::Result<()> {
+    let mut config = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|config| config.label == MAIN_WINDOW)
+        .expect("the main picker window is configured")
+        .clone();
+    config.label = label.to_owned();
+    config.visible = false;
+    config.focus = false;
+    let window = WebviewWindowBuilder::from_config(app, &config)?.build()?;
+    let slot = app
+        .state::<Mutex<PendingLinks>>()
+        .lock()
+        .unwrap()
+        .get(label)
+        .map_or(0, |link| link.slot);
+    let preferred = app.state::<Mutex<PickerSize>>().lock().unwrap().preferred;
+    if preferred.is_some() {
+        let _ = fit_picker(window.clone(), None, None);
+    }
+    position_picker(app, &window, slot);
+    show_window(&window);
+    Ok(())
+}
+
+fn position_picker(app: &AppHandle, window: &WebviewWindow, slot: usize) {
+    let Some(anchor) = app.get_webview_window(MAIN_WINDOW) else {
+        return;
+    };
+    let (Ok(position), Ok(Some(monitor)), Ok(size)) = (
+        anchor.outer_position(),
+        anchor.current_monitor(),
+        window.outer_size(),
+    ) else {
+        return;
+    };
+    let area = monitor.work_area();
+    let distance = (24.0 * (slot % 8) as f64 * monitor.scale_factor()).round() as i32;
+    let offset = |position: i32, start: i32, room: u32| {
+        let end = start + room as i32;
+        let position = position.clamp(start, end);
+        if end - position >= distance {
+            position + distance
+        } else {
+            (position - distance).max(start)
         }
-        let _ = window.unminimize();
-        let _ = window.show();
-        let _ = window.set_focus();
+    };
+    let _ = window.set_position(PhysicalPosition::new(
+        offset(
+            position.x,
+            area.position.x,
+            area.size.width.saturating_sub(size.width),
+        ),
+        offset(
+            position.y,
+            area.position.y,
+            area.size.height.saturating_sub(size.height),
+        ),
+    ));
+}
+
+fn show_window(window: &WebviewWindow) {
+    if window.label() == MAIN_WINDOW && matches!(window.is_visible(), Ok(false)) {
+        let has_preferred_size = window
+            .state::<Mutex<PickerSize>>()
+            .lock()
+            .unwrap()
+            .preferred
+            .is_some();
+        if has_preferred_size {
+            let _ = fit_picker(window.clone(), None, None);
+        }
+    }
+    let _ = window.unminimize();
+    let _ = window.show();
+    let _ = window.set_focus();
+}
+
+fn reopen(app: &AppHandle) {
+    let active = app
+        .state::<Mutex<PendingLinks>>()
+        .lock()
+        .unwrap()
+        .windows()
+        .filter_map(|(label, link)| {
+            app.get_webview_window(label)
+                .map(|window| (link.id, window))
+        })
+        .max_by_key(|(id, _)| *id)
+        .map(|(_, window)| window)
+        .or_else(|| app.get_webview_window(MAIN_WINDOW));
+    if let Some(window) = active {
+        show_window(&window);
     }
 }
 
@@ -236,7 +371,7 @@ fn receive_arguments(app: &AppHandle, args: impl IntoIterator<Item = String>) {
         .filter_map(|argument| Url::parse(&argument).ok())
         .collect();
     if !receive_links(app, urls) {
-        show_window(app);
+        reopen(app);
     }
 }
 
@@ -259,8 +394,8 @@ fn main() {
             let has_preferred_size = size.preferred.is_some();
             app.manage(Mutex::new(size));
             if has_preferred_size {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = fit_picker(window, None);
+                if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
+                    let _ = fit_picker(window, None, None);
                 }
             }
             #[cfg(target_os = "windows")]
@@ -281,24 +416,54 @@ fn main() {
             open_settings,
             fit_picker,
         ])
-        .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let state = window.state::<Mutex<PendingLinks>>();
-                let id = state.lock().unwrap().current().map(|link| link.id);
-                if let Some(id) = id {
-                    finish_link(window.app_handle(), id, true);
-                } else {
-                    let _ = window.hide();
+        .on_window_event(|window, event| match event {
+            WindowEvent::CloseRequested { api, .. } => {
+                let main = window.label() == MAIN_WINDOW;
+                if main {
+                    api.prevent_close();
+                }
+                if let Some(webview) = window.app_handle().get_webview_window(window.label()) {
+                    let state = window.state::<Mutex<PendingLinks>>();
+                    if main {
+                        let id = state.lock().unwrap().get(MAIN_WINDOW).map(|link| link.id);
+                        if let Some(id) = id {
+                            finish_link(&webview, id);
+                        } else {
+                            let _ = webview.hide();
+                        }
+                    } else {
+                        let link = state.lock().unwrap().remove(window.label());
+                        if let Some(link) = link {
+                            remember_picker_size(&webview, &link);
+                        }
+                    }
                 }
             }
+            WindowEvent::Destroyed if window.label() != MAIN_WINDOW => {
+                window
+                    .state::<Mutex<PendingLinks>>()
+                    .lock()
+                    .unwrap()
+                    .remove(window.label());
+            }
+            _ => {}
         })
         .build(tauri::generate_context!())
         .expect("failed to build Link Selector")
         .run(|app, event| match event {
             RunEvent::ExitRequested { .. } => {
-                if let Some(window) = app.get_webview_window("main") {
-                    remember_picker_size(&window);
+                let mut active: Vec<_> = app
+                    .state::<Mutex<PendingLinks>>()
+                    .lock()
+                    .unwrap()
+                    .windows()
+                    .map(|(label, link)| (label.clone(), link.clone()))
+                    .collect();
+                active.sort_by_key(|(_, link)| link.id);
+                for (label, link) in active {
+                    if let Some(window) = app.get_webview_window(&label) {
+                        remember_picker_size(&window, &link);
+                    }
                 }
             }
             #[cfg(target_os = "macos")]
@@ -306,7 +471,7 @@ fn main() {
                 receive_links(app, urls);
             }
             #[cfg(target_os = "macos")]
-            RunEvent::Reopen { .. } => show_window(app),
+            RunEvent::Reopen { .. } => reopen(app),
             _ => {}
         });
 }

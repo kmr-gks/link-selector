@@ -5,6 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
+vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ label: "main" }) }));
 
 const request = vi.mocked(invoke);
 const link = {
@@ -93,7 +94,7 @@ describe("browser picker", () => {
       .mockReturnValue(300);
     try {
       emitQueueChange();
-      await vi.waitFor(() => expect(request).toHaveBeenCalledWith("fit_picker", { contentHeight: 621 }));
+      await vi.waitFor(() => expect(request).toHaveBeenCalledWith("fit_picker", { contentHeight: 621, id: 7 }));
     } finally {
       scrollHeight.mockRestore();
       clientHeight.mockRestore();
