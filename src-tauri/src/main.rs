@@ -26,6 +26,9 @@ use tauri::{
 struct BrowserChoice {
     id: String,
     name: String,
+    #[cfg(target_os = "windows")]
+    #[serde(skip)]
+    package_family: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -74,7 +77,7 @@ fn picker_icons(
 }
 
 #[tauri::command]
-fn open_browser(
+async fn open_browser(
     window: WebviewWindow,
     state: State<'_, Mutex<PendingLinks>>,
     id: u64,
@@ -86,17 +89,41 @@ fn open_browser(
         .get_with_id(window.label(), id)
         .cloned()
         .ok_or("このリンクは処理済みです。")?;
-    let path = platform::browser_choices(&link.url, &window.app_handle().config().identifier)
+    let browser = platform::browser_choices(&link.url, &window.app_handle().config().identifier)
         .into_iter()
         .find(|browser| browser.id == browser_id)
         .ok_or("ブラウザが見つかりませんでした。別のブラウザを選んでください。")?;
-    platform::open_in_browser(&link.url, &path).map_err(|_| {
+    let launch_error = || {
         format!(
             "{} を開けませんでした。別のブラウザを選んでください。",
-            path.name
+            browser.name
         )
-    })?;
-    finish_link(&window, id);
+    };
+    #[cfg(target_os = "windows")]
+    if let Some(family) = browser.package_family.as_ref() {
+        let owner = window.hwnd().map_err(|_| launch_error())?.0 as isize;
+        let family = family.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            platform::open_packaged_browser(&link.url, &family, Some(owner))
+        })
+        .await
+        .map_err(|_| launch_error())?
+        .map_err(|_| launch_error())?;
+    } else {
+        platform::open_in_browser(&link.url, &browser).map_err(|_| launch_error())?;
+    }
+    #[cfg(target_os = "macos")]
+    platform::open_in_browser(&link.url, &browser).map_err(|_| launch_error())?;
+
+    let (completed, mut result) = tauri::async_runtime::channel(1);
+    window
+        .clone()
+        .run_on_main_thread(move || {
+            finish_link(&window, id);
+            let _ = completed.try_send(());
+        })
+        .map_err(|_| launch_error())?;
+    result.recv().await.ok_or_else(launch_error)?;
     Ok(())
 }
 

@@ -1,17 +1,24 @@
 use crate::BrowserChoice;
 use std::{collections::HashSet, io, process::Command};
 use tauri::Url;
-use windows_sys::Win32::{
-    Foundation::{LocalFree, RPC_E_CHANGED_MODE},
-    System::{
-        Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED},
-        Environment::ExpandEnvironmentStringsW,
+use windows::{
+    core::{Interface, HSTRING},
+    Foundation::Uri,
+    System::{Launcher, LauncherOptions},
+    Win32::{
+        Foundation::HWND,
+        System::WinRT::{RoInitialize, RoUninitialize, RO_INIT_MULTITHREADED},
+        UI::Shell::IInitializeWithWindow,
     },
+};
+use windows_sys::Win32::{
+    Foundation::LocalFree,
+    Storage::Packaging::Appx::{PackageFamilyNameFromFullName, PACKAGE_FAMILY_NAME_MAX_LENGTH},
+    System::Environment::ExpandEnvironmentStringsW,
     UI::{
         Shell::{
-            AssocQueryStringW, CommandLineToArgvW, ShellExecuteExW, ShellExecuteW,
-            ASSOCF_INIT_FIXED_PROGID, ASSOCSTR_FRIENDLYAPPNAME, SEE_MASK_CLASSNAME,
-            SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SHELLEXECUTEINFOW,
+            AssocQueryStringW, CommandLineToArgvW, ShellExecuteW, ASSOCF_INIT_FIXED_PROGID,
+            ASSOCSTR_FRIENDLYAPPNAME,
         },
         WindowsAndMessaging::SW_SHOWNORMAL,
     },
@@ -95,6 +102,9 @@ fn add_packaged_choices(
         let Ok(id) = associations.get_value::<String, _>(scheme) else {
             continue;
         };
+        let Some(family) = package_family(&package) else {
+            continue;
+        };
         let normalized = id.to_ascii_lowercase();
         if !normalized.starts_with("appx")
             || !id.bytes().all(|byte| byte.is_ascii_alphanumeric())
@@ -108,8 +118,22 @@ fn add_packaged_choices(
         choices.push(BrowserChoice {
             id: format!("{PACKAGED_CHOICE}{id}"),
             name,
+            package_family: Some(family),
         });
     }
+}
+
+fn package_family(full_name: &str) -> Option<String> {
+    let full_name = wide(full_name);
+    let mut family = [0u16; PACKAGE_FAMILY_NAME_MAX_LENGTH as usize + 1];
+    let mut length = family.len() as u32;
+    let result = unsafe {
+        PackageFamilyNameFromFullName(full_name.as_ptr(), &mut length, family.as_mut_ptr())
+    };
+    if result != 0 || length == 0 {
+        return None;
+    }
+    String::from_utf16(&family[..length as usize - 1]).ok()
 }
 
 fn association_name(id: &str) -> Option<String> {
@@ -163,7 +187,11 @@ fn add_choice(
         .ok()
         .filter(|name| !name.is_empty() && !name.starts_with('@'))
         .unwrap_or_else(|| fallback_name.to_owned());
-    choices.push(BrowserChoice { id, name });
+    choices.push(BrowserChoice {
+        id,
+        name,
+        package_family: None,
+    });
 }
 
 pub fn browser_icons(_: &Url, _: &str) -> std::collections::HashMap<String, String> {
@@ -183,9 +211,6 @@ fn registered_command(id: &str) -> io::Result<String> {
 }
 
 pub fn open_in_browser(url: &Url, browser: &BrowserChoice) -> io::Result<()> {
-    if let Some(id) = browser.id.strip_prefix(PACKAGED_CHOICE) {
-        return open_packaged_browser(url, id);
-    }
     let template = registered_command(&browser.id)?;
     let expanded = expand_environment(&template)?;
     let mut arguments = split_command(&expanded)?.into_iter();
@@ -209,34 +234,30 @@ pub fn open_in_browser(url: &Url, browser: &BrowserChoice) -> io::Result<()> {
     command.spawn().map(|_| ())
 }
 
-fn open_packaged_browser(url: &Url, id: &str) -> io::Result<()> {
-    let class = wide(id);
-    let link = wide(url.as_str());
-    let verb = wide("open");
-    let mut request = SHELLEXECUTEINFOW {
-        cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
-        fMask: SEE_MASK_CLASSNAME | SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI,
-        lpClass: class.as_ptr(),
-        lpFile: link.as_ptr(),
-        lpVerb: verb.as_ptr(),
-        nShow: SW_SHOWNORMAL,
-        ..Default::default()
-    };
-    // The shell may dispatch a packaged app's open verb through COM.
-    let apartment = unsafe { CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32) };
-    if apartment < 0 && apartment != RPC_E_CHANGED_MODE {
-        return Err(io::Error::from_raw_os_error(apartment));
+pub fn open_packaged_browser(url: &Url, family: &str, owner: Option<isize>) -> io::Result<()> {
+    // This runs on a worker so Windows can complete activation without blocking the picker UI.
+    unsafe { RoInitialize(RO_INIT_MULTITHREADED) }.map_err(io::Error::other)?;
+    let launched = (|| {
+        let link = Uri::CreateUri(&HSTRING::from(url.as_str()))?;
+        let options = LauncherOptions::new()?;
+        options.SetTargetApplicationPackageFamilyName(&HSTRING::from(family))?;
+        if let Some(owner) = owner {
+            unsafe {
+                options
+                    .cast::<IInitializeWithWindow>()?
+                    .Initialize(HWND(owner as _))?
+            };
+        }
+        Launcher::LaunchUriWithOptionsAsync(&link, &options)?.join()
+    })();
+    unsafe { RoUninitialize() };
+    match launched {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(io::Error::other(
+            "Windows did not launch the selected package",
+        )),
+        Err(error) => Err(io::Error::other(error)),
     }
-    let launched = unsafe { ShellExecuteExW(&mut request) };
-    let result = if launched == 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    };
-    if apartment >= 0 {
-        unsafe { CoUninitialize() };
-    }
-    result
 }
 
 fn expand_environment(template: &str) -> io::Result<Vec<u16>> {
@@ -366,13 +387,17 @@ mod tests {
         let (packages, _) = root.create_subkey("Packages").unwrap();
         let (classes, _) = root.create_subkey("Classes").unwrap();
         let (associations, _) = packages
-            .create_subkey(r"Example.Firefox_1.0.0_x64__example\App\Capabilities\URLAssociations")
+            .create_subkey(
+                r"Example.Firefox_1.0.0.0_x64__8wekyb3d8bbwe\App\Capabilities\URLAssociations",
+            )
             .unwrap();
         associations.set_value("https", &"AppXBrowser123").unwrap();
         associations.set_value("http", &"AppXMissing123").unwrap();
         classes.create_subkey("AppXBrowser123").unwrap();
         let (duplicate, _) = packages
-            .create_subkey(r"Example.Duplicate_1.0.0_x64__example\App\Capabilities\URLAssociations")
+            .create_subkey(
+                r"Example.Firefox_2.0.0.0_x64__8wekyb3d8bbwe\App\Capabilities\URLAssociations",
+            )
             .unwrap();
         duplicate.set_value("https", &"appxbrowser123").unwrap();
 
@@ -383,20 +408,15 @@ mod tests {
         add_packaged_choices(&packages, &classes, "https", &mut seen, &mut choices);
         assert_eq!(choices.len(), 1);
         assert_eq!(choices[0].id.to_ascii_lowercase(), "msix:appxbrowser123");
+        assert_eq!(
+            choices[0].package_family.as_deref(),
+            Some("Example.Firefox_8wekyb3d8bbwe")
+        );
         assert!(!choices[0].name.is_empty());
     }
 
     #[test]
     fn selected_prog_id_receives_the_original_url() {
-        verify_url_delivery(false);
-    }
-
-    #[test]
-    fn selected_packaged_class_receives_the_original_url() {
-        verify_url_delivery(true);
-    }
-
-    fn verify_url_delivery(packaged: bool) {
         let scratch = tempfile::tempdir().unwrap();
         let receiver = scratch.path().join("receive-url.ps1");
         fs::write(
@@ -407,11 +427,7 @@ mod tests {
         )
         .unwrap();
 
-        let id = if packaged {
-            format!("AppXLinkSelectorTest{}", std::process::id())
-        } else {
-            format!("LinkSelector.Test.{}", std::process::id())
-        };
+        let id = format!("LinkSelector.Test.{}", std::process::id());
         let class = TestClass {
             root: RegKey::predef(HKEY_CURRENT_USER),
             path: format!(r"Software\Classes\{id}"),
@@ -432,12 +448,9 @@ mod tests {
         let address = "http://127.0.0.1:9/selected?x=1&y=2";
         let url = Url::parse(address).unwrap();
         let browser = BrowserChoice {
-            id: if packaged {
-                format!("{PACKAGED_CHOICE}{id}")
-            } else {
-                id
-            },
+            id,
             name: "Test browser".into(),
+            package_family: None,
         };
         open_in_browser(&url, &browser).unwrap();
         let received = scratch.path().join("received.txt");
@@ -451,5 +464,59 @@ mod tests {
             "The selected ProgID did not receive the URL: {:?}",
             fs::read_to_string(received)
         );
+    }
+
+    #[test]
+    #[ignore = "requires a signed Firefox MSIX registered for the test user"]
+    fn selected_firefox_msix_receives_the_link() {
+        use std::{
+            io::{BufRead, BufReader, Write},
+            net::TcpListener,
+            time::Instant,
+        };
+
+        let family = std::env::var("LINK_SELECTOR_TEST_MSIX").unwrap();
+        for scheme in ["http", "https"] {
+            let url = Url::parse(&format!("{scheme}://127.0.0.1/")).unwrap();
+            assert!(browser_choices(&url, "")
+                .iter()
+                .any(|browser| browser.package_family.as_deref() == Some(&family)));
+        }
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let path = "/link-selector-msix?x=1&y=2";
+        let url = Url::parse(&format!("http://{}{path}", listener.local_addr().unwrap())).unwrap();
+        open_packaged_browser(&url, &family, None).unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while Instant::now() < deadline {
+            let mut stream = match listener.accept() {
+                Ok((stream, _)) => stream,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(100));
+                    continue;
+                }
+                Err(error) => panic!("Could not accept the browser request: {error}"),
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut headers = BufReader::new(&stream).lines();
+            let request = headers.next().and_then(Result::ok).unwrap_or_default();
+            let firefox = headers
+                .map_while(Result::ok)
+                .take_while(|line| !line.is_empty())
+                .any(|line| {
+                    line.to_ascii_lowercase().starts_with("user-agent:")
+                        && line.contains("Firefox/")
+                });
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            if request.starts_with(&format!("GET {path} ")) && firefox {
+                return;
+            }
+        }
+        panic!("The selected Firefox MSIX did not request {path}");
     }
 }

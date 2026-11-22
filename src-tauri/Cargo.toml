@@ -22,4 +22,5 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["NSA
 clipboard-win = "5"
 tauri-plugin-single-instance = "2"
 winreg = "0.56"
-windows-sys = { version = "0.61", features = ["Win32_System_Com", "Win32_System_Environment", "Win32_System_Registry", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.62", features = ["Foundation", "System", "Win32_System_WinRT", "Win32_UI_Shell"] }
+windows-sys = { version = "0.61", features = ["Win32_Storage_Packaging_Appx", "Win32_System_Environment", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
