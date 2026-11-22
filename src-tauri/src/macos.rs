@@ -1,10 +1,11 @@
 use crate::BrowserChoice;
 use base64::{engine::general_purpose::STANDARD, Engine};
-use objc2::rc::autoreleasepool;
+use objc2::{rc::autoreleasepool, AnyThread};
 use objc2_app_kit::{
-    NSBitmapImageFileType, NSBitmapImageRep, NSPasteboard, NSPasteboardTypeString, NSWorkspace,
+    NSBitmapImageFileType, NSBitmapImageRep, NSDeviceRGBColorSpace, NSGraphicsContext,
+    NSPasteboard, NSPasteboardTypeString, NSWorkspace,
 };
-use objc2_foundation::{NSBundle, NSDictionary, NSString, NSURL};
+use objc2_foundation::{NSBundle, NSDictionary, NSPoint, NSRect, NSSize, NSString, NSURL};
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
@@ -82,8 +83,21 @@ pub fn browser_icons(url: &Url, own_identifier: &str) -> HashMap<String, String>
 fn browser_icon(workspace: &NSWorkspace, path: &str) -> Option<String> {
     autoreleasepool(|_| {
         let icon = workspace.iconForFile(&NSString::from_str(path));
-        let tiff = icon.TIFFRepresentation()?;
-        let bitmap = NSBitmapImageRep::imageRepWithData(&tiff)?;
+        // Browser icons are 28 CSS pixels wide. A 56-pixel bitmap stays sharp on Retina.
+        const PIXELS: isize = 56;
+        // Null planes ask AppKit to allocate and manage the bitmap storage.
+        let bitmap = unsafe {
+            NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(
+                NSBitmapImageRep::alloc(), std::ptr::null_mut(), PIXELS, PIXELS, 8, 4, true, false,
+                NSDeviceRGBColorSpace, 0, 0,
+            )
+        }?;
+        let context = NSGraphicsContext::graphicsContextWithBitmapImageRep(&bitmap)?;
+        NSGraphicsContext::saveGraphicsState_class();
+        NSGraphicsContext::setCurrentContext(Some(&context));
+        icon.drawInRect(NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(56.0, 56.0)));
+        NSGraphicsContext::restoreGraphicsState_class();
+
         // An empty dictionary requests the PNG encoder's default properties.
         let png = unsafe {
             bitmap.representationUsingType_properties(
