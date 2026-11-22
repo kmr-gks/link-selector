@@ -46,6 +46,9 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
+      - name: Test release publishing
+        shell: bash
+        run: bash scripts/test-publish-release.sh
 
       - run: cargo +stable fmt --manifest-path src-tauri/Cargo.toml --check
       - run: cargo +stable test --manifest-path src-tauri/Cargo.toml --locked
@@ -91,7 +94,13 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    concurrency:
+      group: release-${{ github.ref }}
+      cancel-in-progress: false
     steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@v8
         with:
           path: release
@@ -99,15 +108,5 @@ jobs:
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          cd release
-          version=${GITHUB_REF_NAME#v}
-          files=("Link-Selector-macOS-$version-universal.dmg" "Link-Selector-Windows-$version-x64-setup.exe")
-          sha256sum "${files[@]}" > SHA256SUMS.txt
-          release_flags=()
-          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
-            release_flags+=(--prerelease)
-          fi
-          gh release create "$GITHUB_REF_NAME" "${files[@]}" SHA256SUMS.txt \
-            --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes "${release_flags[@]}"
+        working-directory: release
+        run: bash ../scripts/publish-release.sh "$GITHUB_REF_NAME" "$GITHUB_REPOSITORY"

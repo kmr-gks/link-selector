@@ -42,6 +42,8 @@ cargo test --manifest-path src-tauri/Cargo.toml --locked
 
 `v0.2.0` のようにアプリのバージョンと一致するタグをpushすると、両OSの検証を通過した後に [GitHub Releases](https://github.com/kmr-gks/link-selector/releases) へインストーラーとSHA-256チェックサムを公開します。インストーラー名にはアプリ名、OS名、バージョン、アーキテクチャが含まれます。macOS版はアドホック署名、Windows版は開発者証明書による署名前のビルドです。
 
+公開済みのタグでワークフローを再実行すると、同じリリースに必要な配布物が揃っていることを確認し、公開済みのファイルを保持します。
+
 ## 技術構成
 
 Tauri 2とRustでアプリを構成し、両OSの選択画面をTypeScript、HTML、CSSで実装しています。OSとの連携は `src-tauri/src/macos.rs` と `src-tauri/src/windows.rs` に分かれています。
