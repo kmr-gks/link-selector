@@ -228,7 +228,9 @@ const ready = isMainWindow
     listen("main-picker-changed", () => void refresh()),
     listen<[number, number]>("picker-deferred", ({ payload }) => {
       const [id, count] = payload;
-      deferred = payload;
+      if (!deferred || id > deferred[0] || (id === deferred[0] && count > deferred[1])) {
+        deferred = payload;
+      }
       if (current?.id !== id) return;
       current.waiting = Math.max(current.waiting, count);
       const waiting = app.querySelector(".waiting");
