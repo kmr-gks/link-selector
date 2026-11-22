@@ -82,7 +82,7 @@ fn supported(url: &Url) -> bool {
             path.extension()
                 .and_then(|extension| extension.to_str())
                 .is_some_and(|extension| {
-                    ["htm", "html", "shtml", "xht", "xhtml"]
+                    ["htm", "html", "shtm", "shtml", "xht", "xhtm", "xhtml"]
                         .iter()
                         .any(|supported| extension.eq_ignore_ascii_case(supported))
                 })
@@ -151,5 +151,16 @@ mod tests {
             .url
             .as_str()
             .ends_with("Test%20Page.HTML"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn accepts_short_shtml_and_xhtml_extensions_registered_by_macos() {
+        let mut links = PendingLinks::default();
+        let windows = links.add([
+            url("file:///tmp/example.SHTM"),
+            url("file:///tmp/example.xhtm"),
+        ]);
+        assert_eq!(windows.len(), 2);
     }
 }
