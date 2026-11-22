@@ -22,7 +22,7 @@ gh() {
                          size: (if $state == "starter" or $state == "empty" then 0 else 10 end)},
                         {name: "SHA256SUMS.txt", state: "uploaded", size: 10}
                     ] + (if $state == "incomplete" then [] else [{name: $win, state: "uploaded", size: 10}] end))}') || return 2
-                jq -r "${!#}" <<< "$json" ;;
+                jq -r "${!#}" <<< "$json" | awk '{ sub(/\r$/, ""); printf "%s\r\n", $0 }' ;;
             *) return 2 ;;
         esac
     elif [[ $1 == release && $2 == create ]]; then

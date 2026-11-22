@@ -8,6 +8,7 @@ files=("Link-Selector-macOS-$version-universal.dmg" "Link-Selector-Windows-$vers
 
 if existing=$(gh release view "$tag" --repo "$repository" --json isDraft,assets \
     --jq '.isDraft, (.assets[] | select(.state == "uploaded" and .size > 0) | .name)'); then
+    existing=${existing//$'\r'/}
     if [[ ${existing%%$'\n'*} != false ]]; then
         echo "Release $tag is still a draft." >&2
         exit 1
