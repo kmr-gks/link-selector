@@ -95,31 +95,36 @@ fn add_packaged_choices(
 ) {
     // Windows creates an AppX ProgID for each protocol declared in the package manifest.
     for package in packages.enum_keys().filter_map(Result::ok) {
-        let path = format!(r"{package}\App\Capabilities\URLAssociations");
-        let Ok(associations) = packages.open_subkey(path) else {
-            continue;
-        };
-        let Ok(id) = associations.get_value::<String, _>(scheme) else {
+        let Ok(applications) = packages.open_subkey(&package) else {
             continue;
         };
         let Some(family) = package_family(&package) else {
             continue;
         };
-        let normalized = id.to_ascii_lowercase();
-        if !normalized.starts_with("appx")
-            || !id.bytes().all(|byte| byte.is_ascii_alphanumeric())
-            || classes.open_subkey(&id).is_err()
-            || !seen.insert(normalized)
-        {
-            continue;
+        for application in applications.enum_keys().filter_map(Result::ok) {
+            let path = format!(r"{application}\Capabilities\URLAssociations");
+            let Ok(associations) = applications.open_subkey(path) else {
+                continue;
+            };
+            let Ok(id) = associations.get_value::<String, _>(scheme) else {
+                continue;
+            };
+            let normalized = id.to_ascii_lowercase();
+            if !normalized.starts_with("appx")
+                || !id.bytes().all(|byte| byte.is_ascii_alphanumeric())
+                || classes.open_subkey(&id).is_err()
+                || !seen.insert(normalized)
+            {
+                continue;
+            }
+            let name = association_name(&id)
+                .unwrap_or_else(|| package.split('_').next().unwrap_or(&package).to_owned());
+            choices.push(BrowserChoice {
+                id: format!("{PACKAGED_CHOICE}{id}"),
+                name,
+                package_family: Some(family.clone()),
+            });
         }
-        let name = association_name(&id)
-            .unwrap_or_else(|| package.split('_').next().unwrap_or(&package).to_owned());
-        choices.push(BrowserChoice {
-            id: format!("{PACKAGED_CHOICE}{id}"),
-            name,
-            package_family: Some(family),
-        });
     }
 }
 
@@ -388,7 +393,7 @@ mod tests {
         let (classes, _) = root.create_subkey("Classes").unwrap();
         let (associations, _) = packages
             .create_subkey(
-                r"Example.Firefox_1.0.0.0_x64__8wekyb3d8bbwe\App\Capabilities\URLAssociations",
+                r"Example.Firefox_1.0.0.0_x64__8wekyb3d8bbwe\BrowserMain\Capabilities\URLAssociations",
             )
             .unwrap();
         associations.set_value("https", &"AppXBrowser123").unwrap();
@@ -396,7 +401,7 @@ mod tests {
         classes.create_subkey("AppXBrowser123").unwrap();
         let (duplicate, _) = packages
             .create_subkey(
-                r"Example.Firefox_2.0.0.0_x64__8wekyb3d8bbwe\App\Capabilities\URLAssociations",
+                r"Example.Firefox_2.0.0.0_x64__8wekyb3d8bbwe\BrowserMain\Capabilities\URLAssociations",
             )
             .unwrap();
         duplicate.set_value("https", &"appxbrowser123").unwrap();
