@@ -4,17 +4,17 @@ use tauri::Url;
 
 pub const MAIN_WINDOW: &str = "main";
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 pub struct StartupLinks(Option<Vec<Url>>);
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 impl Default for StartupLinks {
     fn default() -> Self {
         Self(Some(Vec::new()))
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 impl StartupLinks {
     pub fn route(&mut self, urls: Vec<Url>) -> Option<Vec<Url>> {
         if let Some(queued) = &mut self.0 {
@@ -188,7 +188,6 @@ mod tests {
         Url::parse(value).unwrap()
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
     fn cancellation_and_launch_claim_the_same_link_exclusively() {
         let address = url("https://example.com/");
