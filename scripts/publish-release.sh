@@ -7,14 +7,14 @@ version=${tag#v}
 files=("Link-Selector-macOS-$version-universal.dmg" "Link-Selector-Windows-$version-x64-setup.exe")
 
 if existing=$(gh release view "$tag" --repo "$repository" --json isDraft,assets \
-    --jq '.isDraft, (.assets[].name)'); then
+    --jq '.isDraft, (.assets[] | select(.state == "uploaded" and .size > 0) | .name)'); then
     if [[ ${existing%%$'\n'*} != false ]]; then
         echo "Release $tag is still a draft." >&2
         exit 1
     fi
     for file in "${files[@]}" SHA256SUMS.txt; do
         if ! grep -Fxq -- "$file" <<< "$existing"; then
-            echo "Published release $tag is missing $file." >&2
+            echo "Published release $tag is missing a complete upload of $file." >&2
             exit 1
         fi
     done

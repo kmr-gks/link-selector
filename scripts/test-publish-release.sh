@@ -12,11 +12,17 @@ printf 'Windows' > "$windows"
 
 gh() {
     if [[ $1 == release && $2 == view ]]; then
+        local json
         case "$RELEASE_STATE" in
             missing) return 1 ;;
-            published) printf '%s\n' false "$macos" "$windows" SHA256SUMS.txt ;;
-            incomplete) printf '%s\n' false "$macos" SHA256SUMS.txt ;;
-            draft) printf '%s\n' true "$macos" "$windows" SHA256SUMS.txt ;;
+            published|incomplete|draft|starter|empty)
+                json=$(jq -n --arg mac "$macos" --arg win "$windows" --arg state "$RELEASE_STATE" '
+                    {isDraft: ($state == "draft"), assets: ([
+                        {name: $mac, state: (if $state == "starter" then "starter" else "uploaded" end),
+                         size: (if $state == "starter" or $state == "empty" then 0 else 10 end)},
+                        {name: "SHA256SUMS.txt", state: "uploaded", size: 10}
+                    ] + (if $state == "incomplete" then [] else [{name: $win, state: "uploaded", size: 10}] end))}') || return 2
+                jq -r "${!#}" <<< "$json" ;;
             *) return 2 ;;
         esac
     elif [[ $1 == release && $2 == create ]]; then
@@ -42,4 +48,10 @@ if RELEASE_STATE=draft bash "$publish" v1.2.3 owner/repo; then
     echo 'A draft release was incorrectly accepted.' >&2
     exit 1
 fi
+for broken in starter empty; do
+    if RELEASE_STATE=$broken bash "$publish" v1.2.3 owner/repo; then
+        echo "A release with a $broken upload was incorrectly accepted." >&2
+        exit 1
+    fi
+done
 [[ ! -e create.log && ! -e SHA256SUMS.txt ]]
