@@ -12,7 +12,7 @@ mod platform;
 #[path = "windows.rs"]
 mod platform;
 
-use links::{Link, PendingLinks, MAIN_WINDOW};
+use links::{PendingLinks, MAIN_WINDOW};
 use picker_size::{Dimensions, PickerSize};
 use serde::Serialize;
 use std::sync::Mutex;
@@ -124,7 +124,7 @@ fn fit_picker(
             .lock()
             .unwrap()
             .get_with_id(window.label(), id)
-            .is_none()
+            .is_none_or(|link| link.presented.is_some())
     }) || window.is_maximized()?
         || window.is_fullscreen()?
     {
@@ -164,6 +164,14 @@ fn fit_picker(
     }
 
     let target = PhysicalSize::new(width, height);
+    if let Some(id) = id {
+        // The resize event for this first, automatic fit must not become a preference.
+        window
+            .state::<Mutex<PendingLinks>>()
+            .lock()
+            .unwrap()
+            .set_presented(window.label(), id, dimensions(target, scale));
+    }
     if target != inner {
         let position = window.outer_position()?;
         let last_x = area.position.x + (max_width - width) as i32;
@@ -177,13 +185,6 @@ fn fit_picker(
             window.set_position(target_position)?;
         }
     }
-    if let Some(id) = id {
-        window
-            .state::<Mutex<PendingLinks>>()
-            .lock()
-            .unwrap()
-            .set_presented(window.label(), id, dimensions(target, scale));
-    }
     Ok(())
 }
 
@@ -195,22 +196,35 @@ fn dimensions(size: PhysicalSize<u32>, scale: f64) -> Dimensions {
     }
 }
 
-fn remember_picker_size(window: &WebviewWindow, link: &Link) {
-    if link.presented.is_none()
-        || window.is_maximized().unwrap_or(true)
+fn record_picker_resize(window: &tauri::Window, size: PhysicalSize<u32>) {
+    if window.is_maximized().unwrap_or(true)
         || window.is_fullscreen().unwrap_or(true)
+        || window.is_minimized().unwrap_or(true)
+        || window.inner_size().ok() != Some(size)
     {
         return;
     }
-    if let (Ok(size), Ok(scale)) = (window.inner_size(), window.scale_factor()) {
-        if let Err(error) = window
+    let Ok(scale) = window.scale_factor() else {
+        return;
+    };
+    let size = dimensions(size, scale);
+    if window
+        .state::<Mutex<PendingLinks>>()
+        .lock()
+        .unwrap()
+        .record_resize(window.label(), size)
+    {
+        window
             .state::<Mutex<PickerSize>>()
             .lock()
             .unwrap()
-            .remember(link.presented, dimensions(size, scale))
-        {
-            eprintln!("Unable to save picker size: {error}");
-        }
+            .remember(size);
+    }
+}
+
+fn save_picker_size(app: &AppHandle) {
+    if let Err(error) = app.state::<Mutex<PickerSize>>().lock().unwrap().save() {
+        eprintln!("Unable to save picker size: {error}");
     }
 }
 
@@ -220,10 +234,10 @@ fn finish_link(window: &WebviewWindow, id: u64) {
         .lock()
         .unwrap()
         .finish(window.label(), id);
-    let Some(link) = link else {
+    if link.is_none() {
         return;
-    };
-    remember_picker_size(window, &link);
+    }
+    save_picker_size(window.app_handle());
     if window.label() == MAIN_WINDOW {
         let _ = window.hide();
         let _ = window.emit("main-picker-changed", ());
@@ -277,6 +291,10 @@ fn create_picker(app: &AppHandle, label: &str) -> tauri::Result<()> {
     config.label = label.to_owned();
     config.visible = false;
     config.focus = false;
+    if let Some(size) = app.state::<Mutex<PickerSize>>().lock().unwrap().preferred {
+        config.width = size.width;
+        config.height = size.height;
+    }
     let window = WebviewWindowBuilder::from_config(app, &config)?.build()?;
     let slot = app
         .state::<Mutex<PendingLinks>>()
@@ -284,10 +302,6 @@ fn create_picker(app: &AppHandle, label: &str) -> tauri::Result<()> {
         .unwrap()
         .get(label)
         .map_or(0, |link| link.slot);
-    let preferred = app.state::<Mutex<PickerSize>>().lock().unwrap().preferred;
-    if preferred.is_some() {
-        let _ = fit_picker(window.clone(), None, None);
-    }
     position_picker(app, &window, slot);
     show_window(&window);
     Ok(())
@@ -420,6 +434,11 @@ fn main() {
             fit_picker,
         ])
         .on_window_event(|window, event| match event {
+            WindowEvent::Resized(size) => {
+                if window.try_state::<Mutex<PickerSize>>().is_some() {
+                    record_picker_resize(window, *size);
+                }
+            }
             WindowEvent::CloseRequested { api, .. } => {
                 let main = window.label() == MAIN_WINDOW;
                 if main {
@@ -436,8 +455,8 @@ fn main() {
                         }
                     } else {
                         let link = state.lock().unwrap().remove(window.label());
-                        if let Some(link) = link {
-                            remember_picker_size(&webview, &link);
+                        if link.is_some() {
+                            save_picker_size(window.app_handle());
                         }
                     }
                 }
@@ -454,21 +473,7 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("failed to build Link Selector")
         .run(|app, event| match event {
-            RunEvent::ExitRequested { .. } => {
-                let mut active: Vec<_> = app
-                    .state::<Mutex<PendingLinks>>()
-                    .lock()
-                    .unwrap()
-                    .windows()
-                    .map(|(label, link)| (label.clone(), link.clone()))
-                    .collect();
-                active.sort_by_key(|(_, link)| link.id);
-                for (label, link) in active {
-                    if let Some(window) = app.get_webview_window(&label) {
-                        remember_picker_size(&window, &link);
-                    }
-                }
-            }
+            RunEvent::ExitRequested { .. } => save_picker_size(app),
             #[cfg(target_os = "macos")]
             RunEvent::Opened { urls } => {
                 receive_links(app, urls);

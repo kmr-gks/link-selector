@@ -60,6 +60,21 @@ impl PendingLinks {
         }
     }
 
+    pub fn record_resize(&mut self, window: &str, size: Dimensions) -> bool {
+        let Some(last) = self
+            .by_window
+            .get_mut(window)
+            .and_then(|link| link.presented.as_mut())
+        else {
+            return false;
+        };
+        if !size.is_valid() || !size.differs_from(*last) {
+            return false;
+        }
+        *last = size;
+        true
+    }
+
     pub fn finish(&mut self, window: &str, id: u64) -> Option<Link> {
         self.get_with_id(window, id)?;
         self.by_window.remove(window)
@@ -128,6 +143,39 @@ mod tests {
         assert!(links.finish(MAIN_WINDOW, 1).is_none());
         assert_eq!(links.get_with_id(MAIN_WINDOW, 3).unwrap().url, link);
         assert_eq!(links.get_with_id("picker-2", 2).unwrap().url, link);
+    }
+
+    #[test]
+    fn records_resizes_in_event_order_before_either_window_closes() {
+        let mut links = PendingLinks::default();
+        let mut size = crate::picker_size::PickerSize::default();
+        let default = Dimensions {
+            width: 460.0,
+            height: 465.0,
+        };
+        let first = Dimensions {
+            width: 530.0,
+            height: 550.0,
+        };
+        let second = Dimensions {
+            width: 580.0,
+            height: 600.0,
+        };
+        links.add([url("https://example.com/first")]);
+        assert!(!links.record_resize(MAIN_WINDOW, default));
+        links.set_presented(MAIN_WINDOW, 1, default);
+        assert!(!links.record_resize(MAIN_WINDOW, default));
+        assert!(links.record_resize(MAIN_WINDOW, first));
+        size.remember(first);
+
+        links.add([url("https://example.com/second")]);
+        links.set_presented("picker-2", 2, size.preferred.unwrap());
+        assert!(!links.record_resize("picker-2", first));
+        assert!(links.record_resize("picker-2", second));
+        size.remember(second);
+        links.finish("picker-2", 2).unwrap();
+        links.finish(MAIN_WINDOW, 1).unwrap();
+        assert_eq!(size.preferred, Some(second));
     }
 
     #[cfg(target_os = "macos")]
