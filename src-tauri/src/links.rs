@@ -177,20 +177,21 @@ impl<'a> LaunchRequest<'a> {
     }
 
     pub fn submit<T>(&mut self, submit: impl FnOnce() -> io::Result<T>) -> Result<T, LaunchError> {
-        let mut pending = self.pending.lock().unwrap();
-        let Some(link) = pending
-            .by_window
-            .get_mut(self.window)
-            .filter(|link| link.id == self.id && !link.launching)
-        else {
-            return Err(LaunchError::DismissedOrAlreadySubmitted);
-        };
+        {
+            let mut pending = self.pending.lock().unwrap();
+            let Some(link) = pending
+                .by_window
+                .get_mut(self.window)
+                .filter(|link| link.id == self.id && !link.launching)
+            else {
+                return Err(LaunchError::DismissedOrAlreadySubmitted);
+            };
+            // Claim dispatch after platform preparation and before entering the OS API.
+            link.launching = true;
+            self.submitted = true;
+        }
 
-        // Serialize dismissal with submission, leaving platform prep and completion outside the lock.
-        let operation = submit()?;
-        link.launching = true;
-        self.submitted = true;
-        Ok(operation)
+        submit().map_err(LaunchError::from)
     }
 
     pub fn complete(mut self) {
@@ -256,14 +257,21 @@ mod tests {
     }
 
     #[test]
-    fn submitted_work_does_not_hold_the_lock_while_awaiting_the_browser() {
+    fn os_submission_and_response_leave_other_pickers_available() {
         let address = url("https://example.com/");
         let pending = Mutex::new(PendingLinks::default());
-        pending.lock().unwrap().add([address.clone()]);
+        pending
+            .lock()
+            .unwrap()
+            .add([address.clone(), address.clone()]);
         let mut first = LaunchRequest::new(&pending, MAIN_WINDOW, 1);
         first
             .submit(|| {
-                assert!(pending.try_lock().is_err());
+                let mut links = pending
+                    .try_lock()
+                    .expect("OS handoff must not lock the queue");
+                assert!(links.finish("picker-2", 2).is_some());
+                assert_eq!(links.add([address.clone()]), ["picker-3"]);
                 Ok(())
             })
             .unwrap();
@@ -274,23 +282,25 @@ mod tests {
 
         pending.try_lock().unwrap().finish(MAIN_WINDOW, 1).unwrap();
         pending.lock().unwrap().add([address]);
-        let mut second = LaunchRequest::new(&pending, MAIN_WINDOW, 2);
+        let mut second = LaunchRequest::new(&pending, MAIN_WINDOW, 4);
         second.submit(|| Ok(())).unwrap();
         drop(first);
         assert!(matches!(
-            LaunchRequest::new(&pending, MAIN_WINDOW, 2).submit(|| Ok(())),
+            LaunchRequest::new(&pending, MAIN_WINDOW, 4).submit(|| Ok(())),
             Err(LaunchError::DismissedOrAlreadySubmitted)
         ));
 
         drop(second);
-        let mut retry = LaunchRequest::new(&pending, MAIN_WINDOW, 2);
+        let mut retry = LaunchRequest::new(&pending, MAIN_WINDOW, 4);
         assert!(retry
             .submit::<()>(|| Err(io::Error::other("failed submission")))
             .is_err());
+        drop(retry);
+        let mut retry = LaunchRequest::new(&pending, MAIN_WINDOW, 4);
         retry.submit(|| Ok(())).unwrap();
         retry.complete();
         assert!(matches!(
-            LaunchRequest::new(&pending, MAIN_WINDOW, 2).submit(|| Ok(())),
+            LaunchRequest::new(&pending, MAIN_WINDOW, 4).submit(|| Ok(())),
             Err(LaunchError::DismissedOrAlreadySubmitted)
         ));
     }
