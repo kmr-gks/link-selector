@@ -216,6 +216,10 @@ fn registered_command(id: &str) -> io::Result<String> {
 }
 
 pub fn open_in_browser(url: &Url, browser: &BrowserChoice) -> io::Result<()> {
+    spawn_browser(url, browser).map(|_| ())
+}
+
+fn spawn_browser(url: &Url, browser: &BrowserChoice) -> io::Result<std::process::Child> {
     let template = registered_command(&browser.id)?;
     let expanded = expand_environment(&template)?;
     let mut arguments = split_command(&expanded)?.into_iter();
@@ -236,7 +240,7 @@ pub fn open_in_browser(url: &Url, browser: &BrowserChoice) -> io::Result<()> {
         command.arg(url.as_str());
     }
 
-    command.spawn().map(|_| ())
+    command.spawn()
 }
 
 pub fn open_packaged_browser(url: &Url, family: &str, owner: Option<isize>) -> io::Result<()> {
@@ -427,6 +431,7 @@ mod tests {
         fs::write(
             &receiver,
             r#"param([string]$Url)
+Start-Sleep -Milliseconds 400
 [System.IO.File]::WriteAllText((Join-Path $PSScriptRoot 'received.txt'), $Url)
 "#,
         )
@@ -457,18 +462,24 @@ mod tests {
             name: "Test browser".into(),
             package_family: None,
         };
-        open_in_browser(&url, &browser).unwrap();
-        let received = scratch.path().join("received.txt");
-        for _ in 0..100 {
-            if fs::read_to_string(&received).is_ok_and(|value| value == address) {
-                return;
+        let mut child = spawn_browser(&url, &browser).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        let exit = loop {
+            match child.try_wait() {
+                Ok(Some(exit)) => break exit,
+                Ok(None) if std::time::Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(50));
+                }
+                outcome => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("The test browser did not exit within the deadline: {outcome:?}");
+                }
             }
-            thread::sleep(Duration::from_millis(100));
-        }
-        panic!(
-            "The selected ProgID did not receive the URL: {:?}",
-            fs::read_to_string(received)
-        );
+        };
+        assert!(exit.success(), "The test browser exited with {exit}");
+        let received = fs::read_to_string(scratch.path().join("received.txt")).unwrap();
+        assert_eq!(received, address);
     }
 
     #[test]
