@@ -1,4 +1,4 @@
-use crate::BrowserChoice;
+use crate::{BrowserChoice, LaunchError, LaunchRequest};
 use std::{collections::HashSet, io, process::Command};
 use tauri::Url;
 use windows::{
@@ -215,11 +215,19 @@ fn registered_command(id: &str) -> io::Result<String> {
     Ok(template)
 }
 
-pub fn open_in_browser(url: &Url, browser: &BrowserChoice) -> io::Result<()> {
-    spawn_browser(url, browser).map(|_| ())
+pub fn open_in_browser(
+    url: &Url,
+    browser: &BrowserChoice,
+    request: &mut LaunchRequest<'_>,
+) -> Result<(), LaunchError> {
+    spawn_browser(url, browser, request).map(|_| ())
 }
 
-fn spawn_browser(url: &Url, browser: &BrowserChoice) -> io::Result<std::process::Child> {
+fn spawn_browser(
+    url: &Url,
+    browser: &BrowserChoice,
+    request: &mut LaunchRequest<'_>,
+) -> Result<std::process::Child, LaunchError> {
     let template = registered_command(&browser.id)?;
     let expanded = expand_environment(&template)?;
     let mut arguments = split_command(&expanded)?.into_iter();
@@ -240,32 +248,42 @@ fn spawn_browser(url: &Url, browser: &BrowserChoice) -> io::Result<std::process:
         command.arg(url.as_str());
     }
 
-    command.spawn()
+    request.submit(|| command.spawn())
 }
 
-pub fn open_packaged_browser(url: &Url, family: &str, owner: Option<isize>) -> io::Result<()> {
+pub fn open_packaged_browser(
+    url: &Url,
+    family: &str,
+    owner: Option<isize>,
+    request: &mut LaunchRequest<'_>,
+) -> Result<(), LaunchError> {
     // This runs on a worker so Windows can complete activation without blocking the picker UI.
     unsafe { RoInitialize(RO_INIT_MULTITHREADED) }.map_err(io::Error::other)?;
-    let launched = (|| {
-        let link = Uri::CreateUri(&HSTRING::from(url.as_str()))?;
-        let options = LauncherOptions::new()?;
-        options.SetTargetApplicationPackageFamilyName(&HSTRING::from(family))?;
+    let launched = (|| -> Result<bool, LaunchError> {
+        let link = Uri::CreateUri(&HSTRING::from(url.as_str())).map_err(io::Error::other)?;
+        let options = LauncherOptions::new().map_err(io::Error::other)?;
+        options
+            .SetTargetApplicationPackageFamilyName(&HSTRING::from(family))
+            .map_err(io::Error::other)?;
         if let Some(owner) = owner {
             unsafe {
                 options
-                    .cast::<IInitializeWithWindow>()?
-                    .Initialize(HWND(owner as _))?
+                    .cast::<IInitializeWithWindow>()
+                    .map_err(io::Error::other)?
+                    .Initialize(HWND(owner as _))
+                    .map_err(io::Error::other)?
             };
         }
-        Launcher::LaunchUriWithOptionsAsync(&link, &options)?.join()
+        let operation = request.submit(|| {
+            Launcher::LaunchUriWithOptionsAsync(&link, &options).map_err(io::Error::other)
+        })?;
+        Ok(operation.join().map_err(io::Error::other)?)
     })();
     unsafe { RoUninitialize() };
-    match launched {
-        Ok(true) => Ok(()),
-        Ok(false) => Err(io::Error::other(
-            "Windows did not launch the selected package",
-        )),
-        Err(error) => Err(io::Error::other(error)),
+    if launched? {
+        Ok(())
+    } else {
+        Err(io::Error::other("Windows did not launch the selected package").into())
     }
 }
 
@@ -462,7 +480,10 @@ Start-Sleep -Milliseconds 400
             name: "Test browser".into(),
             package_family: None,
         };
-        let mut child = spawn_browser(&url, &browser).unwrap();
+        let pending = std::sync::Mutex::new(crate::PendingLinks::default());
+        pending.lock().unwrap().add([url.clone()]);
+        let mut request = LaunchRequest::new(&pending, crate::MAIN_WINDOW, 1);
+        let mut child = spawn_browser(&url, &browser, &mut request).unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(60);
         let exit = loop {
             match child.try_wait() {
@@ -503,7 +524,10 @@ Start-Sleep -Milliseconds 400
         listener.set_nonblocking(true).unwrap();
         let path = "/link-selector-msix?x=1&y=2";
         let url = Url::parse(&format!("http://{}{path}", listener.local_addr().unwrap())).unwrap();
-        open_packaged_browser(&url, &family, None).unwrap();
+        let pending = std::sync::Mutex::new(crate::PendingLinks::default());
+        pending.lock().unwrap().add([url.clone()]);
+        let mut request = LaunchRequest::new(&pending, crate::MAIN_WINDOW, 1);
+        open_packaged_browser(&url, &family, None, &mut request).unwrap();
 
         let deadline = Instant::now() + Duration::from_secs(30);
         while Instant::now() < deadline {

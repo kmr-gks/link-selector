@@ -1,4 +1,4 @@
-use crate::BrowserChoice;
+use crate::{BrowserChoice, LaunchError, LaunchRequest};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use objc2::{rc::autoreleasepool, AnyThread};
 use objc2_app_kit::{
@@ -116,8 +116,25 @@ fn browser_icon(workspace: &NSWorkspace, path: &str) -> Option<String> {
     })
 }
 
-pub fn open_in_browser(url: &Url, browser: &BrowserChoice) -> Result<(), ()> {
-    open(&["-a", &browser.id, url.as_str()])
+pub fn open_in_browser(
+    url: &Url,
+    browser: &BrowserChoice,
+    request: &mut LaunchRequest<'_>,
+) -> Result<(), LaunchError> {
+    use std::{io, process::Stdio};
+
+    let mut command = Command::new("/usr/bin/open");
+    command
+        .args(["-a", &browser.id, url.as_str()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut child = request.submit(|| command.spawn())?;
+    if child.wait()?.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other("macOS did not launch the selected browser").into())
+    }
 }
 
 pub fn open_settings() -> Result<(), ()> {

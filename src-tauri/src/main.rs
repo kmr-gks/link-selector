@@ -12,7 +12,7 @@ mod platform;
 #[path = "windows.rs"]
 mod platform;
 
-use links::{PendingLinks, MAIN_WINDOW};
+use links::{LaunchError, LaunchRequest, PendingLinks, MAIN_WINDOW};
 use picker_size::{Dimensions, PickerSize};
 use serde::Serialize;
 use std::sync::Mutex;
@@ -108,28 +108,28 @@ async fn open_browser(
             None
         };
         let pending = worker_window.state::<Mutex<PendingLinks>>();
-        if !pending
-            .lock()
-            .unwrap()
-            .begin_launch(worker_window.label(), id)
-        {
-            return Err("このリンクは処理済みです。".to_owned());
-        }
+        let mut request = LaunchRequest::new(&pending, worker_window.label(), id);
         #[cfg(target_os = "windows")]
         let outcome = if let Some(family) = browser.package_family.as_ref() {
-            platform::open_packaged_browser(&link.url, family, owner)
+            platform::open_packaged_browser(&link.url, family, owner, &mut request)
         } else {
-            platform::open_in_browser(&link.url, &browser)
+            platform::open_in_browser(&link.url, &browser, &mut request)
         };
         #[cfg(target_os = "macos")]
-        let outcome = platform::open_in_browser(&link.url, &browser);
-        outcome.map_err(|_| {
-            pending
-                .lock()
-                .unwrap()
-                .launch_failed(worker_window.label(), id);
-            owner_error()
-        })
+        let outcome = platform::open_in_browser(&link.url, &browser, &mut request);
+        match outcome {
+            Ok(()) => {
+                request.complete();
+                Ok(())
+            }
+            Err(LaunchError::DismissedOrAlreadySubmitted) => {
+                Err("このリンクは処理済みです。".to_owned())
+            }
+            Err(LaunchError::Platform(error)) => {
+                eprintln!("Browser launch failed: {:?}", error.kind());
+                Err(owner_error())
+            }
+        }
     })
     .await
     .map_err(|_| "ブラウザを起動できませんでした。".to_owned())??;

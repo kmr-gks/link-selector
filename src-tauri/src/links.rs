@@ -1,5 +1,9 @@
 use crate::picker_size::Dimensions;
-use std::collections::{HashMap, VecDeque};
+use std::{
+    collections::{HashMap, VecDeque},
+    io,
+    sync::Mutex,
+};
 use tauri::Url;
 
 pub const MAIN_WINDOW: &str = "main";
@@ -104,19 +108,6 @@ impl PendingLinks {
         true
     }
 
-    pub fn begin_launch(&mut self, window: &str, id: u64) -> bool {
-        let Some(link) = self.by_window.get_mut(window).filter(|link| link.id == id) else {
-            return false;
-        };
-        !std::mem::replace(&mut link.launching, true)
-    }
-
-    pub fn launch_failed(&mut self, window: &str, id: u64) {
-        if let Some(link) = self.by_window.get_mut(window).filter(|link| link.id == id) {
-            link.launching = false;
-        }
-    }
-
     pub fn finish(&mut self, window: &str, id: u64) -> Option<Link> {
         self.get_with_id(window, id)?;
         self.by_window.remove(window)
@@ -156,6 +147,72 @@ impl PendingLinks {
     }
 }
 
+#[derive(Debug)]
+pub enum LaunchError {
+    DismissedOrAlreadySubmitted,
+    Platform(io::Error),
+}
+
+impl From<io::Error> for LaunchError {
+    fn from(error: io::Error) -> Self {
+        Self::Platform(error)
+    }
+}
+
+pub struct LaunchRequest<'a> {
+    pending: &'a Mutex<PendingLinks>,
+    window: &'a str,
+    id: u64,
+    submitted: bool,
+}
+
+impl<'a> LaunchRequest<'a> {
+    pub fn new(pending: &'a Mutex<PendingLinks>, window: &'a str, id: u64) -> Self {
+        Self {
+            pending,
+            window,
+            id,
+            submitted: false,
+        }
+    }
+
+    pub fn submit<T>(&mut self, submit: impl FnOnce() -> io::Result<T>) -> Result<T, LaunchError> {
+        let mut pending = self.pending.lock().unwrap();
+        let Some(link) = pending
+            .by_window
+            .get_mut(self.window)
+            .filter(|link| link.id == self.id && !link.launching)
+        else {
+            return Err(LaunchError::DismissedOrAlreadySubmitted);
+        };
+
+        // Serialize dismissal with submission, leaving platform prep and completion outside the lock.
+        let operation = submit()?;
+        link.launching = true;
+        self.submitted = true;
+        Ok(operation)
+    }
+
+    pub fn complete(mut self) {
+        self.submitted = false;
+    }
+}
+
+impl Drop for LaunchRequest<'_> {
+    fn drop(&mut self) {
+        if self.submitted {
+            let mut pending = self.pending.lock().unwrap();
+            if let Some(link) = pending
+                .by_window
+                .get_mut(self.window)
+                .filter(|link| link.id == self.id)
+            {
+                link.launching = false;
+            }
+        }
+    }
+}
+
 fn supported(url: &Url) -> bool {
     match url.scheme() {
         "http" | "https" => url.has_host(),
@@ -182,24 +239,60 @@ mod tests {
     }
 
     #[test]
-    fn a_link_can_be_dismissed_before_or_after_its_launch_is_claimed() {
+    fn dismissal_during_preparation_prevents_submission() {
         let address = url("https://example.com/");
-        let mut links = PendingLinks::default();
-        links.add([address.clone()]);
-        assert!(links.finish(MAIN_WINDOW, 1).is_some());
-        links.add([address.clone()]);
-        assert!(!links.begin_launch(MAIN_WINDOW, 1));
-        assert!(links.begin_launch(MAIN_WINDOW, 2));
-        assert!(!links.begin_launch(MAIN_WINDOW, 2));
+        let pending = Mutex::new(PendingLinks::default());
+        pending.lock().unwrap().add([address.clone()]);
+        let mut launch = LaunchRequest::new(&pending, MAIN_WINDOW, 1);
 
-        assert!(links.finish(MAIN_WINDOW, 2).is_some());
-        links.add([address]);
-        assert!(links.begin_launch(MAIN_WINDOW, 3));
-        links.launch_failed(MAIN_WINDOW, 2);
-        assert!(!links.begin_launch(MAIN_WINDOW, 3));
-        assert!(links.finish(MAIN_WINDOW, 2).is_none());
-        links.launch_failed(MAIN_WINDOW, 3);
-        assert!(links.begin_launch(MAIN_WINDOW, 3));
+        pending.lock().unwrap().finish(MAIN_WINDOW, 1).unwrap();
+        pending.lock().unwrap().add([address]);
+        assert!(matches!(
+            launch
+                .submit(|| -> io::Result<()> { panic!("the dismissed URL must not be submitted") }),
+            Err(LaunchError::DismissedOrAlreadySubmitted)
+        ));
+        assert_eq!(pending.lock().unwrap().get(MAIN_WINDOW).unwrap().id, 2);
+    }
+
+    #[test]
+    fn submitted_work_does_not_hold_the_lock_while_awaiting_the_browser() {
+        let address = url("https://example.com/");
+        let pending = Mutex::new(PendingLinks::default());
+        pending.lock().unwrap().add([address.clone()]);
+        let mut first = LaunchRequest::new(&pending, MAIN_WINDOW, 1);
+        first
+            .submit(|| {
+                assert!(pending.try_lock().is_err());
+                Ok(())
+            })
+            .unwrap();
+        assert!(matches!(
+            LaunchRequest::new(&pending, MAIN_WINDOW, 1).submit(|| Ok(())),
+            Err(LaunchError::DismissedOrAlreadySubmitted)
+        ));
+
+        pending.try_lock().unwrap().finish(MAIN_WINDOW, 1).unwrap();
+        pending.lock().unwrap().add([address]);
+        let mut second = LaunchRequest::new(&pending, MAIN_WINDOW, 2);
+        second.submit(|| Ok(())).unwrap();
+        drop(first);
+        assert!(matches!(
+            LaunchRequest::new(&pending, MAIN_WINDOW, 2).submit(|| Ok(())),
+            Err(LaunchError::DismissedOrAlreadySubmitted)
+        ));
+
+        drop(second);
+        let mut retry = LaunchRequest::new(&pending, MAIN_WINDOW, 2);
+        assert!(retry
+            .submit::<()>(|| Err(io::Error::other("failed submission")))
+            .is_err());
+        retry.submit(|| Ok(())).unwrap();
+        retry.complete();
+        assert!(matches!(
+            LaunchRequest::new(&pending, MAIN_WINDOW, 2).submit(|| Ok(())),
+            Err(LaunchError::DismissedOrAlreadySubmitted)
+        ));
     }
 
     #[test]
