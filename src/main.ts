@@ -21,7 +21,7 @@ const isMainWindow = getCurrentWindow().label === "main";
 let current: Picker | null = null;
 let requestNumber = 0;
 let busy = false;
-let deferred: [id: number, count: number] | undefined;
+let deferredDuringRefresh: Map<number, number> | undefined;
 
 function element<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -43,17 +43,21 @@ function button(label: string, className: string, action: () => void) {
 
 async function refresh() {
   const request = ++requestNumber;
+  const notifications = new Map<number, number>();
+  deferredDuringRefresh = notifications;
   try {
     const view = await invoke<Picker | null>("picker_state");
     if (request !== requestNumber) return;
-    if (view && deferred?.[0] === view.id) {
-      view.waiting = Math.max(view.waiting, deferred[1]);
+    if (view) {
+      view.waiting = Math.max(view.waiting, notifications.get(view.id) ?? 0);
     }
     current = view;
     busy = false;
     render();
   } catch {
     if (request === requestNumber) setStatus("選択画面を読み込めませんでした。");
+  } finally {
+    if (deferredDuringRefresh === notifications) deferredDuringRefresh = undefined;
   }
 }
 
@@ -230,8 +234,8 @@ const ready = isMainWindow
     listen("main-picker-changed", () => void refresh()),
     listen<[number, number]>("picker-deferred", ({ payload }) => {
       const [id, count] = payload;
-      if (!deferred || id > deferred[0] || (id === deferred[0] && count > deferred[1])) {
-        deferred = payload;
+      if (deferredDuringRefresh) {
+        deferredDuringRefresh.set(id, Math.max(count, deferredDuringRefresh.get(id) ?? 0));
       }
       if (current?.id !== id) return;
       current.waiting = Math.max(current.waiting, count);

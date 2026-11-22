@@ -82,6 +82,23 @@ describe("browser picker", () => {
     expect(document.querySelector(".waiting")?.textContent).toContain("3 件");
   });
 
+  it("preserves an event for an older link promoted after a newer one", async () => {
+    picker = { ...link, id: 12, url: "https://example.com/newer", waiting: 0 };
+    emitQueueChange();
+    await vi.waitFor(() => expect(document.querySelector(".link-url")?.textContent).toBe(picker?.url));
+    emitDeferred(12, 1);
+
+    let resolvePicker!: (value: typeof link) => void;
+    const response = new Promise<typeof link>((resolve) => { resolvePicker = resolve; });
+    request.mockImplementation(async (command) => command === "picker_state" ? response as never : undefined as never);
+    emitQueueChange();
+    emitDeferred(11, 1);
+    emitDeferred(12, 2);
+    resolvePicker({ ...link, id: 11, url: "https://example.com/older", waiting: 0 });
+    await vi.waitFor(() => expect(document.querySelector(".link-url")?.textContent).toBe("https://example.com/older"));
+    expect(document.querySelector(".waiting")?.textContent).toContain("1 件");
+  });
+
   it("can dismiss the picker while the browser launch is still awaiting a response", async () => {
     let completeLaunch!: () => void;
     const launch = new Promise<void>((resolve) => { completeLaunch = resolve; });
