@@ -7,9 +7,28 @@ if ($exitCode -ne 7) {
     throw "Expected exit code 7, received [$exitCode]"
 }
 
+$scratch = Join-Path $env:RUNNER_TEMP ('process-job-' + [Guid]::NewGuid())
+New-Item -ItemType Directory -Path $scratch | Out-Null
 try {
-    Invoke-WindowsTestProcess $cmd '/d /c ping.exe -n 30 127.0.0.1' 1 | Out-Null
-    throw 'Expected a timeout while waiting for the child process'
-} catch [System.TimeoutException] {
-    Write-Host "Process timeout verified: $($_.Exception.Message)"
+    $fixture = Join-Path $scratch 'parent.ps1'
+    $marker = Join-Path $scratch 'child-pid.txt'
+    @'
+$child = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\ping.exe') `
+    -ArgumentList '-n 90 127.0.0.1' -PassThru
+Set-Content -LiteralPath (Join-Path $PSScriptRoot 'child-pid.txt') -Value $child.Id
+$child.WaitForExit()
+'@ | Set-Content -LiteralPath $fixture
+    $powershell = Join-Path $PSHOME 'powershell.exe'
+    try {
+        Invoke-WindowsTestProcess $powershell "-NoProfile -File `"$fixture`"" 20 | Out-Null
+        throw 'Expected a timeout'
+    } catch [System.TimeoutException] {
+        $childId = [int](Get-Content -LiteralPath $marker)
+        if (Get-Process -Id $childId -ErrorAction SilentlyContinue) {
+            throw "The child process survived the test job timeout: $childId"
+        }
+        Write-Host 'Timed-out test and its child both stopped.'
+    }
+} finally {
+    Remove-Item -LiteralPath $scratch -Recurse -Force
 }
