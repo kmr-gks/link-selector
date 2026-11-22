@@ -4,6 +4,32 @@ use tauri::Url;
 
 pub const MAIN_WINDOW: &str = "main";
 
+#[cfg(target_os = "macos")]
+pub struct StartupLinks(Option<Vec<Url>>);
+
+#[cfg(target_os = "macos")]
+impl Default for StartupLinks {
+    fn default() -> Self {
+        Self(Some(Vec::new()))
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl StartupLinks {
+    pub fn route(&mut self, urls: Vec<Url>) -> Option<Vec<Url>> {
+        if let Some(queued) = &mut self.0 {
+            queued.extend(urls);
+            None
+        } else {
+            Some(urls)
+        }
+    }
+
+    pub fn ready(&mut self) -> Vec<Url> {
+        self.0.take().unwrap_or_default()
+    }
+}
+
 #[derive(Default)]
 pub struct PendingLinks {
     next_id: u64,
@@ -138,6 +164,20 @@ mod tests {
 
     fn url(value: &str) -> Url {
         Url::parse(value).unwrap()
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn delivers_all_cold_start_documents_only_after_setup() {
+        let mut startup = StartupLinks::default();
+        let first = url("file:///tmp/first.html");
+        let second = url("file:///tmp/second.html");
+        let third = url("https://example.com/next");
+        assert_eq!(startup.route(vec![first.clone()]), None);
+        assert_eq!(startup.route(vec![second.clone()]), None);
+        assert_eq!(startup.ready(), vec![first, second]);
+        assert!(startup.ready().is_empty());
+        assert_eq!(startup.route(vec![third.clone()]), Some(vec![third]));
     }
 
     #[test]

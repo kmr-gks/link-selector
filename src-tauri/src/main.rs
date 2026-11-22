@@ -459,6 +459,9 @@ fn main() {
         receive_arguments(app, args.into_iter().skip(1));
     }));
 
+    #[cfg(target_os = "macos")]
+    let mut startup_links = links::StartupLinks::default();
+
     builder
         .manage(Mutex::new(PendingLinks::default()))
         .setup(|app| {
@@ -539,7 +542,13 @@ fn main() {
             RunEvent::ExitRequested { .. } => save_picker_size(app),
             #[cfg(target_os = "macos")]
             RunEvent::Opened { urls } => {
-                receive_links(app, urls);
+                if let Some(urls) = startup_links.route(urls) {
+                    receive_links(app, urls);
+                }
+            }
+            #[cfg(target_os = "macos")]
+            RunEvent::Ready => {
+                receive_links(app, startup_links.ready());
             }
             #[cfg(target_os = "macos")]
             RunEvent::Reopen { .. } => reopen(app),
