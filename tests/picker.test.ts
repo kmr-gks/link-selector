@@ -82,6 +82,28 @@ describe("browser picker", () => {
     expect(document.querySelector(".waiting")?.textContent).toContain("3 件");
   });
 
+  it("can dismiss the picker while the browser launch is still awaiting a response", async () => {
+    let completeLaunch!: () => void;
+    const launch = new Promise<void>((resolve) => { completeLaunch = resolve; });
+    request.mockImplementation(async (command) => {
+      if (command === "picker_state") return picker as never;
+      if (command === "open_browser") return launch as never;
+      if (command === "cancel_link") {
+        picker = null;
+        emitQueueChange();
+      }
+      return undefined as never;
+    });
+    key("1");
+    await vi.waitFor(() => expect(request).toHaveBeenCalledWith("open_browser", { id: 7, browserId: "browser-one" }));
+    key("2");
+    expect(request.mock.calls.filter(([command]) => command === "open_browser")).toHaveLength(1);
+    key("Escape");
+    await vi.waitFor(() => expect(document.querySelector(".link-url")).toBeNull());
+    expect(request).toHaveBeenCalledWith("cancel_link", { id: 7, browserId: undefined });
+    completeLaunch();
+  });
+
   it("shows the link and opens the browser assigned to a number key", async () => {
     expect(document.querySelector(".subtitle")?.textContent).toBe(link.url);
     key("2");

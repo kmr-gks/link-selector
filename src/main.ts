@@ -58,16 +58,18 @@ async function refresh() {
 }
 
 async function processLink(command: "open_browser" | "cancel_link", browser?: Browser) {
-  if (!current || busy) return;
+  if (!current || (busy && command === "open_browser")) return;
   const { id } = current;
-  busy = true;
-  setStatus("");
+  if (command === "open_browser") {
+    busy = true;
+    setStatus("ブラウザを起動しています。画面を閉じた後も起動が続く場合があります。");
+  }
   try {
     await invoke(command, { id, browserId: browser?.id });
   } catch (error) {
     if (current?.id === id) setStatus(String(error));
   } finally {
-    if (current?.id === id) busy = false;
+    if (command === "open_browser" && current?.id === id) busy = false;
   }
 }
 

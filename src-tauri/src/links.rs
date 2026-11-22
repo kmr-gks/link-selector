@@ -117,13 +117,6 @@ impl PendingLinks {
         }
     }
 
-    pub fn cancel(&mut self, window: &str, id: u64) -> Option<Link> {
-        if self.get_with_id(window, id)?.launching {
-            return None;
-        }
-        self.finish(window, id)
-    }
-
     pub fn finish(&mut self, window: &str, id: u64) -> Option<Link> {
         self.get_with_id(window, id)?;
         self.by_window.remove(window)
@@ -189,18 +182,24 @@ mod tests {
     }
 
     #[test]
-    fn cancellation_and_launch_claim_the_same_link_exclusively() {
+    fn a_link_can_be_dismissed_before_or_after_its_launch_is_claimed() {
         let address = url("https://example.com/");
         let mut links = PendingLinks::default();
         links.add([address.clone()]);
-        assert!(links.cancel(MAIN_WINDOW, 1).is_some());
-        links.add([address]);
+        assert!(links.finish(MAIN_WINDOW, 1).is_some());
+        links.add([address.clone()]);
         assert!(!links.begin_launch(MAIN_WINDOW, 1));
         assert!(links.begin_launch(MAIN_WINDOW, 2));
         assert!(!links.begin_launch(MAIN_WINDOW, 2));
-        assert!(links.cancel(MAIN_WINDOW, 2).is_none());
+
+        assert!(links.finish(MAIN_WINDOW, 2).is_some());
+        links.add([address]);
+        assert!(links.begin_launch(MAIN_WINDOW, 3));
         links.launch_failed(MAIN_WINDOW, 2);
-        assert!(links.cancel(MAIN_WINDOW, 2).is_some());
+        assert!(!links.begin_launch(MAIN_WINDOW, 3));
+        assert!(links.finish(MAIN_WINDOW, 2).is_none());
+        links.launch_failed(MAIN_WINDOW, 3);
+        assert!(links.begin_launch(MAIN_WINDOW, 3));
     }
 
     #[test]

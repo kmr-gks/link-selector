@@ -138,7 +138,7 @@ async fn open_browser(
     window
         .clone()
         .run_on_main_thread(move || {
-            finish_link(&window, id, false);
+            finish_link(&window, id);
             let _ = completed.try_send(());
         })
         .map_err(|_| "選択画面を閉じられませんでした。".to_owned())?;
@@ -151,7 +151,7 @@ async fn open_browser(
 
 #[tauri::command]
 fn cancel_link(window: WebviewWindow, id: u64) {
-    finish_link(&window, id, true);
+    finish_link(&window, id);
 }
 
 #[tauri::command]
@@ -288,17 +288,12 @@ fn save_picker_size(app: &AppHandle) {
     }
 }
 
-fn finish_link(window: &WebviewWindow, id: u64, cancel: bool) {
+fn finish_link(window: &WebviewWindow, id: u64) {
     let main = window.label() == MAIN_WINDOW;
     let show_next = {
         let pending = window.state::<Mutex<PendingLinks>>();
         let mut pending = pending.lock().unwrap();
-        let finished = if cancel {
-            pending.cancel(window.label(), id)
-        } else {
-            pending.finish(window.label(), id)
-        };
-        if finished.is_none() {
+        if pending.finish(window.label(), id).is_none() {
             return;
         }
         main && pending.show_next_deferred()
@@ -545,7 +540,7 @@ fn main() {
                         .get(window.label())
                         .map(|link| link.id);
                     if let Some(id) = id {
-                        finish_link(&webview, id, true);
+                        finish_link(&webview, id);
                     } else if window.label() == MAIN_WINDOW {
                         let _ = webview.hide();
                     } else {
