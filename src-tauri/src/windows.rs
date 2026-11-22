@@ -2,10 +2,17 @@ use crate::BrowserChoice;
 use std::{collections::HashSet, io, process::Command};
 use tauri::Url;
 use windows_sys::Win32::{
-    Foundation::LocalFree,
-    System::Environment::ExpandEnvironmentStringsW,
+    Foundation::{LocalFree, RPC_E_CHANGED_MODE},
+    System::{
+        Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED},
+        Environment::ExpandEnvironmentStringsW,
+    },
     UI::{
-        Shell::{CommandLineToArgvW, ShellExecuteW},
+        Shell::{
+            AssocQueryStringW, CommandLineToArgvW, ShellExecuteExW, ShellExecuteW,
+            ASSOCF_INIT_FIXED_PROGID, ASSOCSTR_FRIENDLYAPPNAME, SEE_MASK_CLASSNAME,
+            SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SHELLEXECUTEINFOW,
+        },
         WindowsAndMessaging::SW_SHOWNORMAL,
     },
 };
@@ -20,10 +27,18 @@ use winreg::{
 const OWN_PROG_ID: &str = "LinkSelector.Url";
 const REGISTERED_APPS: &str = "Software\\RegisteredApplications";
 const BROWSER_CLIENTS: &str = "Software\\Clients\\StartMenuInternet";
+const PACKAGES: &str =
+    r"Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages";
+const PACKAGED_CHOICE: &str = "msix:";
 
 pub fn browser_choices(url: &Url, _: &str) -> Vec<BrowserChoice> {
     let mut seen = HashSet::new();
     let mut choices = Vec::new();
+
+    let classes = RegKey::predef(HKEY_CLASSES_ROOT);
+    if let Ok(packages) = classes.open_subkey(PACKAGES) {
+        add_packaged_choices(&packages, &classes, url.scheme(), &mut seen, &mut choices);
+    }
 
     for hive in [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE] {
         let root = RegKey::predef(hive);
@@ -62,6 +77,57 @@ pub fn browser_choices(url: &Url, _: &str) -> Vec<BrowserChoice> {
 
     choices.sort_by_cached_key(|choice| choice.name.to_lowercase());
     choices
+}
+
+fn add_packaged_choices(
+    packages: &RegKey,
+    classes: &RegKey,
+    scheme: &str,
+    seen: &mut HashSet<String>,
+    choices: &mut Vec<BrowserChoice>,
+) {
+    // Windows creates an AppX ProgID for each protocol declared in the package manifest.
+    for package in packages.enum_keys().filter_map(Result::ok) {
+        let path = format!(r"{package}\App\Capabilities\URLAssociations");
+        let Ok(associations) = packages.open_subkey(path) else {
+            continue;
+        };
+        let Ok(id) = associations.get_value::<String, _>(scheme) else {
+            continue;
+        };
+        let normalized = id.to_ascii_lowercase();
+        if !normalized.starts_with("appx")
+            || !id.bytes().all(|byte| byte.is_ascii_alphanumeric())
+            || classes.open_subkey(&id).is_err()
+            || !seen.insert(normalized)
+        {
+            continue;
+        }
+        let name = association_name(&id)
+            .unwrap_or_else(|| package.split('_').next().unwrap_or(&package).to_owned());
+        choices.push(BrowserChoice {
+            id: format!("{PACKAGED_CHOICE}{id}"),
+            name,
+        });
+    }
+}
+
+fn association_name(id: &str) -> Option<String> {
+    let id = wide(id);
+    let mut name = [0u16; 512];
+    let mut length = name.len() as u32;
+    let result = unsafe {
+        AssocQueryStringW(
+            ASSOCF_INIT_FIXED_PROGID,
+            ASSOCSTR_FRIENDLYAPPNAME,
+            id.as_ptr(),
+            std::ptr::null(),
+            name.as_mut_ptr(),
+            &mut length,
+        )
+    };
+    let end = name.iter().position(|&character| character == 0)?;
+    (result == 0 && end > 0).then(|| String::from_utf16_lossy(&name[..end]))
 }
 
 fn add_choice(
@@ -117,6 +183,9 @@ fn registered_command(id: &str) -> io::Result<String> {
 }
 
 pub fn open_in_browser(url: &Url, browser: &BrowserChoice) -> io::Result<()> {
+    if let Some(id) = browser.id.strip_prefix(PACKAGED_CHOICE) {
+        return open_packaged_browser(url, id);
+    }
     let template = registered_command(&browser.id)?;
     let expanded = expand_environment(&template)?;
     let mut arguments = split_command(&expanded)?.into_iter();
@@ -138,6 +207,36 @@ pub fn open_in_browser(url: &Url, browser: &BrowserChoice) -> io::Result<()> {
     }
 
     command.spawn().map(|_| ())
+}
+
+fn open_packaged_browser(url: &Url, id: &str) -> io::Result<()> {
+    let class = wide(id);
+    let link = wide(url.as_str());
+    let verb = wide("open");
+    let mut request = SHELLEXECUTEINFOW {
+        cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+        fMask: SEE_MASK_CLASSNAME | SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI,
+        lpClass: class.as_ptr(),
+        lpFile: link.as_ptr(),
+        lpVerb: verb.as_ptr(),
+        nShow: SW_SHOWNORMAL,
+        ..Default::default()
+    };
+    // The shell may dispatch a packaged app's open verb through COM.
+    let apartment = unsafe { CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32) };
+    if apartment < 0 && apartment != RPC_E_CHANGED_MODE {
+        return Err(io::Error::from_raw_os_error(apartment));
+    }
+    let launched = unsafe { ShellExecuteExW(&mut request) };
+    let result = if launched == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    };
+    if apartment >= 0 {
+        unsafe { CoUninitialize() };
+    }
+    result
 }
 
 fn expand_environment(template: &str) -> io::Result<Vec<u16>> {
@@ -255,7 +354,49 @@ mod tests {
     }
 
     #[test]
+    fn lists_packaged_handlers_without_classic_open_commands() {
+        let fixture = TestClass {
+            root: RegKey::predef(HKEY_CURRENT_USER),
+            path: format!(
+                r"Software\LinkSelector-Packages-Test-{}",
+                std::process::id()
+            ),
+        };
+        let (root, _) = fixture.root.create_subkey(&fixture.path).unwrap();
+        let (packages, _) = root.create_subkey("Packages").unwrap();
+        let (classes, _) = root.create_subkey("Classes").unwrap();
+        let (associations, _) = packages
+            .create_subkey(r"Example.Firefox_1.0.0_x64__example\App\Capabilities\URLAssociations")
+            .unwrap();
+        associations.set_value("https", &"AppXBrowser123").unwrap();
+        associations.set_value("http", &"AppXMissing123").unwrap();
+        classes.create_subkey("AppXBrowser123").unwrap();
+        let (duplicate, _) = packages
+            .create_subkey(r"Example.Duplicate_1.0.0_x64__example\App\Capabilities\URLAssociations")
+            .unwrap();
+        duplicate.set_value("https", &"appxbrowser123").unwrap();
+
+        let mut seen = HashSet::new();
+        let mut choices = Vec::new();
+        add_packaged_choices(&packages, &classes, "http", &mut seen, &mut choices);
+        assert!(choices.is_empty());
+        add_packaged_choices(&packages, &classes, "https", &mut seen, &mut choices);
+        assert_eq!(choices.len(), 1);
+        assert_eq!(choices[0].id.to_ascii_lowercase(), "msix:appxbrowser123");
+        assert!(!choices[0].name.is_empty());
+    }
+
+    #[test]
     fn selected_prog_id_receives_the_original_url() {
+        verify_url_delivery(false);
+    }
+
+    #[test]
+    fn selected_packaged_class_receives_the_original_url() {
+        verify_url_delivery(true);
+    }
+
+    fn verify_url_delivery(packaged: bool) {
         let scratch = tempfile::tempdir().unwrap();
         let receiver = scratch.path().join("receive-url.ps1");
         fs::write(
@@ -266,7 +407,11 @@ mod tests {
         )
         .unwrap();
 
-        let id = format!("LinkSelector.Test.{}", std::process::id());
+        let id = if packaged {
+            format!("AppXLinkSelectorTest{}", std::process::id())
+        } else {
+            format!("LinkSelector.Test.{}", std::process::id())
+        };
         let class = TestClass {
             root: RegKey::predef(HKEY_CURRENT_USER),
             path: format!(r"Software\Classes\{id}"),
@@ -287,7 +432,11 @@ mod tests {
         let address = "http://127.0.0.1:9/selected?x=1&y=2";
         let url = Url::parse(address).unwrap();
         let browser = BrowserChoice {
-            id,
+            id: if packaged {
+                format!("{PACKAGED_CHOICE}{id}")
+            } else {
+                id
+            },
             name: "Test browser".into(),
         };
         open_in_browser(&url, &browser).unwrap();
