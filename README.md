@@ -5,7 +5,7 @@
 ## 使い方
 
 - **macOS**。DMGに入っている `Link Selector.app` を「アプリケーション」にコピーして起動します。「システム設定」→「デスクトップとDock」→「デフォルトのWebブラウザ」で **Link Selector** を選びます。
-- **Windows 11**。`Link-Selector-Windows-x64-setup.exe` を実行します。「設定」→「アプリ」→「既定のアプリ」→「Link Selector」で、`HTTP` と `HTTPS` の両方に Link Selector を選びます。
+- **Windows 11**。`Link-Selector-Windows-<バージョン>-x64-setup.exe` を実行します。「設定」→「アプリ」→「既定のアプリ」→「Link Selector」で、`HTTP` と `HTTPS` の両方に Link Selector を選びます。
 
 外部アプリのリンクを開くと選択画面が出ます。ブラウザ名をクリックするか、上から9件まで数字キーで選べます。`Esc` は表示中のリンクをキャンセルします。複数のリンクは受信順に表示し、URLや選択履歴は保存しません。
 
@@ -35,7 +35,7 @@ cargo test --manifest-path src-tauri/Cargo.toml --locked
 
 [GitHub Actions](https://github.com/kmr-gks/link-selector/actions/workflows/build.yml) は、`main` へのpushとプルリクエストで、両OSのテスト、インストーラーのビルド、配布物の検証を実行します。各実行の成果物からDMGとWindowsインストーラーを取得できます。
 
-`v0.2.0` のようにアプリのバージョンと一致するタグをpushすると、両OSの検証を通過した後に [GitHub Releases](https://github.com/kmr-gks/link-selector/releases) へインストーラーとSHA-256チェックサムを公開します。macOS版はアドホック署名、Windows版は開発者証明書による署名前のビルドです。
+`v0.2.0` のようにアプリのバージョンと一致するタグをpushすると、両OSの検証を通過した後に [GitHub Releases](https://github.com/kmr-gks/link-selector/releases) へインストーラーとSHA-256チェックサムを公開します。インストーラー名にはアプリ名、OS名、バージョン、アーキテクチャが含まれます。macOS版はアドホック署名、Windows版は開発者証明書による署名前のビルドです。
 
 ## 技術構成
 
