@@ -47,7 +47,10 @@ async function refresh() {
   const notifications = new Map<number, number>();
   deferredDuringRefresh = notifications;
   try {
-    const view = await invoke<Picker | null>("picker_state");
+    const view = await invoke<Picker | null>("picker_state").catch((error) => {
+      if (request !== requestNumber) throw error;
+      return invoke<Picker | null>("picker_state");
+    });
     if (request !== requestNumber) return;
     if (view) {
       view.waiting = Math.max(view.waiting, notifications.get(view.id) ?? 0);
@@ -57,7 +60,13 @@ async function refresh() {
     busy = false;
     render();
   } catch {
-    if (request === requestNumber) setStatus("選択画面を読み込めませんでした。");
+    if (request !== requestNumber) return;
+    current = null;
+    busy = false;
+    app.classList.remove("picker");
+    const error = element("p", "instructions", "選択画面を読み込めませんでした。");
+    error.setAttribute("role", "alert");
+    app.replaceChildren(error, button("再読み込み", "primary", () => void refresh()));
   } finally {
     if (deferredDuringRefresh === notifications) deferredDuringRefresh = undefined;
   }

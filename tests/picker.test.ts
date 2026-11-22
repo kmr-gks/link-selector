@@ -161,6 +161,49 @@ describe("browser picker", () => {
     expect(request).toHaveBeenCalledWith("open_browser", { id: 7, browserId: "browser-one" });
   });
 
+  it("loads the promoted link after a temporary state error", async () => {
+    let failNextRead = false;
+    request.mockImplementation(async (command) => {
+      if (command === "cancel_link") {
+        picker = { ...link, id: 10, url: "https://example.com/promoted" };
+        failNextRead = true;
+        emitQueueChange();
+      }
+      if (command === "picker_state") {
+        if (failNextRead) {
+          failNextRead = false;
+          throw new Error("read temporarily unavailable");
+        }
+        return picker as never;
+      }
+      return undefined as never;
+    });
+    key("Escape");
+    await vi.waitFor(() => expect(document.querySelector(".link-url")?.textContent).toBe("https://example.com/promoted"));
+    key("1");
+    expect(request).toHaveBeenCalledWith("open_browser", { id: 10, browserId: "browser-one" });
+  });
+
+  it("offers a retry when the picker state remains unavailable", async () => {
+    let unavailable = true;
+    request.mockImplementation(async (command) => {
+      if (command === "picker_state") {
+        if (unavailable) throw new Error("state unavailable");
+        return { ...link, id: 11 } as never;
+      }
+      return undefined as never;
+    });
+    emitQueueChange();
+    await vi.waitFor(() => expect(document.querySelector('[role="alert"]')).not.toBeNull());
+    key("1");
+    expect(request).not.toHaveBeenCalledWith("open_browser", expect.anything());
+    unavailable = false;
+    document.querySelector<HTMLButtonElement>("button.primary")!.click();
+    await vi.waitFor(() => expect(document.querySelector(".link-url")).not.toBeNull());
+    key("1");
+    expect(request).toHaveBeenCalledWith("open_browser", { id: 11, browserId: "browser-one" });
+  });
+
   it("shows the link and opens the browser assigned to a number key", async () => {
     expect(document.querySelector(".subtitle")?.textContent).toBe(link.url);
     key("2");
