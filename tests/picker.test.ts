@@ -46,6 +46,10 @@ beforeEach(async () => {
   request.mockImplementation(async (command) => {
     if (command === "picker_state") return picker as never;
     if (command === "open_browser" && failedLaunch) throw "ブラウザを開けませんでした。";
+    if (command === "cancel_link") {
+      picker = null;
+      emitQueueChange();
+    }
     return undefined as never;
   });
   emitQueueChange();
@@ -119,6 +123,42 @@ describe("browser picker", () => {
     await vi.waitFor(() => expect(document.querySelector(".link-url")).toBeNull());
     expect(request).toHaveBeenCalledWith("cancel_link", { id: 7, browserId: undefined });
     completeLaunch();
+  });
+
+  it("blocks browser choices and repeated cancellation until the cancelled picker is replaced", async () => {
+    let completeCancellation!: () => void;
+    const cancellation = new Promise<void>((resolve) => { completeCancellation = resolve; });
+    request.mockImplementation((command) => {
+      if (command === "picker_state") return Promise.resolve(picker as never);
+      if (command === "cancel_link") return cancellation as never;
+      return Promise.resolve(undefined as never);
+    });
+
+    key("Escape");
+    key("Escape");
+    key("1");
+    document.querySelector<HTMLButtonElement>(".browser")!.click();
+    expect(request.mock.calls.filter(([command]) => command === "cancel_link")).toHaveLength(1);
+    expect(request).not.toHaveBeenCalledWith("open_browser", expect.anything());
+
+    completeCancellation();
+    await cancellation;
+    key("1");
+    expect(request).not.toHaveBeenCalledWith("open_browser", expect.anything());
+
+    picker = { ...link, id: 8, url: "https://example.com/promoted" };
+    emitQueueChange();
+    await vi.waitFor(() => expect(document.querySelector(".link-url")?.textContent).toBe(picker?.url));
+    key("1");
+    expect(request).toHaveBeenCalledWith("open_browser", { id: 8, browserId: "browser-one" });
+  });
+
+  it("allows selection again if cancelling the current link fails", async () => {
+    request.mockRejectedValueOnce(new Error("キャンセルできませんでした。"));
+    key("Escape");
+    await vi.waitFor(() => expect(document.querySelector(".status")?.textContent).toContain("キャンセルできませんでした。"));
+    key("1");
+    expect(request).toHaveBeenCalledWith("open_browser", { id: 7, browserId: "browser-one" });
   });
 
   it("shows the link and opens the browser assigned to a number key", async () => {

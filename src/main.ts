@@ -21,6 +21,7 @@ const isMainWindow = getCurrentWindow().label === "main";
 let current: Picker | null = null;
 let requestNumber = 0;
 let busy = false;
+let cancellingLinkId: number | undefined;
 let deferredDuringRefresh: Map<number, number> | undefined;
 
 function element<K extends keyof HTMLElementTagNameMap>(
@@ -51,6 +52,7 @@ async function refresh() {
     if (view) {
       view.waiting = Math.max(view.waiting, notifications.get(view.id) ?? 0);
     }
+    if (view?.id !== cancellingLinkId) cancellingLinkId = undefined;
     current = view;
     busy = false;
     render();
@@ -62,15 +64,18 @@ async function refresh() {
 }
 
 async function processLink(command: "open_browser" | "cancel_link", browser?: Browser) {
-  if (!current || (busy && command === "open_browser")) return;
+  if (!current || current.id === cancellingLinkId || (busy && command === "open_browser")) return;
   const { id } = current;
   if (command === "open_browser") {
     busy = true;
     setStatus("ブラウザを起動しています。画面を閉じた後も起動が続く場合があります。");
+  } else {
+    cancellingLinkId = id;
   }
   try {
     await invoke(command, { id, browserId: browser?.id });
   } catch (error) {
+    if (command === "cancel_link" && cancellingLinkId === id) cancellingLinkId = undefined;
     if (current?.id === id) setStatus(String(error));
   } finally {
     if (command === "open_browser" && current?.id === id) busy = false;
