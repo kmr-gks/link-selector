@@ -30,26 +30,6 @@ function Confirm-InstalledArchitecture {
     }
 }
 
-function Confirm-PickerStarts {
-    $process = Start-Process -FilePath $app -ArgumentList 'https://example.invalid/installer-smoke' -PassThru
-    try {
-        $deadline = (Get-Date).AddSeconds(30)
-        do {
-            $process.Refresh()
-            if ($process.HasExited) { throw "The installed app exited before showing a picker ($($process.ExitCode))" }
-            if ($process.MainWindowHandle -ne [IntPtr]::Zero) { return }
-            Start-Sleep -Milliseconds 250
-        } while ((Get-Date) -lt $deadline)
-        throw 'The installed app did not show a picker window'
-    } finally {
-        if (-not $process.HasExited) {
-            Stop-Process -InputObject $process -Force
-            if (-not $process.WaitForExit(5000)) { throw 'The installer smoke-test process did not stop' }
-        }
-        $process.Dispose()
-    }
-}
-
 try {
     $install = Start-Process $Installer -ArgumentList '/S', "/D=$directory" -Wait -PassThru
     if ($install.ExitCode -ne 0 -or !(Test-Path $app)) { throw 'Silent installation failed' }
@@ -63,7 +43,8 @@ try {
     }
     $command = (Get-Item "$class\shell\open\command").GetValue('')
     if ($command -ne ('"{0}" "%1"' -f $app)) { throw "Incorrect launch command: $command" }
-    Confirm-PickerStarts
+    node (Join-Path $PSScriptRoot "check-windows-picker.mjs") $app
+    if ($LASTEXITCODE -ne 0) { throw "The installed app did not render both picker URLs" }
 } finally {
     if (Test-Path $uninstaller) {
         $uninstall = Start-Process $uninstaller -ArgumentList '/S' -Wait -PassThru

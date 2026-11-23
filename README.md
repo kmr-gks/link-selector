@@ -42,7 +42,7 @@ cargo test --manifest-path src-tauri/Cargo.toml --locked
 
 ## CIとリリース
 
-[GitHub Actions](https://github.com/kmr-gks/link-selector/actions/workflows/build.yml) は、`main` へのpushとプルリクエストで、両OSのテスト、インストーラーのビルド、配布物の検証を実行します。共通の画面テストとビルドは1回実行し、その結果を3種類のビルドで使います。各実行の成果物からmacOS用DMGとWindows用のx64・Arm64インストーラーを取得できます。Windows CIでは各OSアーキテクチャのランナーで、インストールされた実行ファイルのアーキテクチャ、選択画面の起動、既定アプリ登録とアンインストールを確認します。
+[GitHub Actions](https://github.com/kmr-gks/link-selector/actions/workflows/build.yml) は、`main` へのpushとプルリクエストで、両OSのテスト、インストーラーのビルド、配布物の検証を実行します。共通の画面テストとビルドは1回実行し、その結果を3種類のビルドで使います。各実行の成果物からmacOS用DMGとWindows用のx64・Arm64インストーラーを取得できます。Windows CIでは各OSアーキテクチャのランナーで、インストールされた実行ファイルのアーキテクチャ、起動時と起動済みの状態で渡した2件のURLが別々の選択画面に表示されること、既定アプリ登録とアンインストールを確認します。
 
 `v0.2.0` のようにアプリのバージョンと一致するタグをpushすると、両OSの検証を通過した後に [GitHub Releases](https://github.com/kmr-gks/link-selector/releases) へインストーラーとSHA-256チェックサムを公開します。インストーラー名にはアプリ名、OS名、バージョン、アーキテクチャが含まれます。macOS版は、署名・公証の設定があるタグではDeveloper IDで署名し、Appleの公証チケットを添付して公開します。設定がない場合はアドホック署名のDMGを公開します。Windows版は開発者証明書による署名前のビルドです。
 
