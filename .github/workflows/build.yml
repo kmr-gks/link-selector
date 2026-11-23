@@ -23,6 +23,12 @@ jobs:
             runner: macos-26
           - platform: windows-x64
             runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            installer_arch: x64
+          - platform: windows-arm64
+            runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            installer_arch: arm64
     steps:
       - uses: actions/checkout@v6
         with:
@@ -30,6 +36,7 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 24
+          architecture: ${{ runner.arch == 'ARM64' && 'arm64' || 'x64' }}
           cache: npm
       - name: Read installer version
         id: version
@@ -43,6 +50,12 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Install Rust
         run: rustup toolchain install stable --profile minimal --component rustfmt --no-self-update
+      - name: Install the Windows Rust target
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          RUST_TARGET: ${{ matrix.target }}
+        run: rustup target add --toolchain stable $env:RUST_TARGET
       - run: npm ci
       - run: npm test
       - run: npm run build
@@ -58,7 +71,16 @@ jobs:
           bash scripts/test-package-macos-ci.sh
 
       - run: cargo +stable fmt --manifest-path src-tauri/Cargo.toml --check
-      - run: cargo +stable test --manifest-path src-tauri/Cargo.toml --locked
+      - name: Run Rust tests
+        shell: bash
+        env:
+          RUST_TARGET: ${{ matrix.target }}
+        run: |
+          target_args=()
+          if [[ -n "$RUST_TARGET" ]]; then
+            target_args=(--target "$RUST_TARGET")
+          fi
+          cargo +stable test --manifest-path src-tauri/Cargo.toml --locked "${target_args[@]}"
       - name: Test Windows subprocess timeout
         if: runner.os == 'Windows'
         timeout-minutes: 1
@@ -73,6 +95,8 @@ jobs:
         if: runner.os == 'Windows'
         timeout-minutes: 10
         shell: powershell
+        env:
+          RUST_TARGET: ${{ matrix.target }}
         run: ./scripts/test-windows-msix.ps1
 
       - name: Build universal macOS app
@@ -101,15 +125,17 @@ jobs:
         shell: pwsh
         env:
           APP_VERSION: ${{ steps.version.outputs.version }}
+          RUST_TARGET: ${{ matrix.target }}
+          INSTALLER_ARCH: ${{ matrix.installer_arch }}
         run: |
           rustup default stable
-          npm run tauri build -- --ci --bundles nsis -- --locked
+          npm run tauri build -- --ci --target $env:RUST_TARGET --bundles nsis -- --locked
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $installers = @(Get-ChildItem src-tauri/target/release/bundle/nsis/*-setup.exe)
+          $installers = @(Get-ChildItem "src-tauri/target/$env:RUST_TARGET/release/bundle/nsis/*-setup.exe")
           if ($installers.Count -ne 1) { throw 'Expected one NSIS installer' }
-          & ./scripts/test-windows-installer.ps1 -Installer $installers[0].FullName
+          & ./scripts/test-windows-installer.ps1 -Installer $installers[0].FullName -Architecture $env:INSTALLER_ARCH
           New-Item -ItemType Directory release -Force | Out-Null
-          Copy-Item $installers[0].FullName "release/Link-Selector-Windows-${env:APP_VERSION}-x64-setup.exe"
+          Copy-Item $installers[0].FullName "release/Link-Selector-Windows-${env:APP_VERSION}-${env:INSTALLER_ARCH}-setup.exe"
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.platform }}

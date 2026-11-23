@@ -40,7 +40,14 @@ try {
     $package = $installed[0]
     $env:LINK_SELECTOR_TEST_MSIX = $package.PackageFamilyName
     $cargo = (Get-Command cargo.exe -CommandType Application).Source
-    $cargoArguments = '+stable test --manifest-path src-tauri/Cargo.toml --locked selected_firefox_msix_receives_the_link -- --ignored'
+    $cargoArguments = '+stable test --manifest-path src-tauri/Cargo.toml --locked'
+    if ($env:RUST_TARGET) {
+        if ($env:RUST_TARGET -notin 'x86_64-pc-windows-msvc', 'aarch64-pc-windows-msvc') {
+            throw "Unsupported Windows Rust target: $env:RUST_TARGET"
+        }
+        $cargoArguments += " --target $env:RUST_TARGET"
+    }
+    $cargoArguments += ' selected_firefox_msix_receives_the_link -- --ignored'
     $exitCode = Invoke-WindowsTestProcess $cargo $cargoArguments 120
     if ($exitCode -ne 0) { throw "Firefox MSIX link activation failed with exit code $exitCode" }
 } catch [WindowsTestJobCleanupException] {
