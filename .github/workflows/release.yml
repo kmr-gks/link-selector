@@ -1,0 +1,156 @@
+name: Publish release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Select tested installers
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      build_run: ${{ steps.prepare.outputs.build_run }}
+      version: ${{ steps.prepare.outputs.version }}
+      notarize: ${{ steps.prepare.outputs.notarize }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Find artifacts for this exact commit
+        id: prepare
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NOTARIZE: ${{ github.event_name == 'push' && (vars.MACOS_REQUIRE_NOTARIZATION == 'true' || secrets.APPLE_CERTIFICATE != '' || secrets.APPLE_CERTIFICATE_PASSWORD != '' || secrets.APPLE_API_KEY != '' || secrets.APPLE_API_ISSUER != '' || secrets.APPLE_API_KEY_BASE64 != '') }}
+        run: |
+          version=$(jq -er '.version' src-tauri/tauri.conf.json)
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            if [[ "$GITHUB_REF_NAME" != "v$version" ]]; then
+              echo "Expected tag v$version" >&2
+              exit 1
+            fi
+            if ! grep -q '[^[:space:]]' "release-notes/$GITHUB_REF_NAME.md"; then
+              echo "Missing Japanese release notes for $GITHUB_REF_NAME" >&2
+              exit 1
+            fi
+          fi
+          commit=$(git rev-parse 'HEAD^{commit}')
+          build_run=$(bash scripts/find-release-build.sh "$GITHUB_REPOSITORY" "$commit")
+          if [[ -n "$build_run" ]]; then
+            echo "Reusing the verified build at https://github.com/$GITHUB_REPOSITORY/actions/runs/$build_run"
+          elif [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            echo 'No complete, successful main build was found for this commit' >&2
+            exit 1
+          else
+            echo 'No reusable build was found. Running the build and tests for the tag.'
+          fi
+          {
+            echo "build_run=$build_run"
+            echo "version=$version"
+            echo "notarize=$NOTARIZE"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build tag when artifacts are unavailable
+    needs: prepare
+    if: github.event_name == 'push' && needs.prepare.outputs.build_run == ''
+    uses: ./.github/workflows/build.yml
+
+  notarize:
+    name: Sign and notarize macOS
+    needs: [prepare, build]
+    if: >-
+      !cancelled() && needs.prepare.result == 'success' &&
+      needs.prepare.outputs.notarize == 'true' &&
+      (needs.prepare.outputs.build_run != '' || needs.build.result == 'success')
+    runs-on: macos-26
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: macos-app
+          path: macos-app
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.prepare.outputs.build_run || github.run_id }}
+      - name: Package and notarize the tested macOS app
+        shell: bash
+        env:
+          APP_VERSION: ${{ needs.prepare.outputs.version }}
+          MACOS_REQUIRE_NOTARIZATION: 'true'
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+        run: |
+          ditto -x -k macos-app/macos-app.zip macos-app
+          bash scripts/package-macos-ci.sh 'macos-app/Link Selector.app' \
+            "release/Link-Selector-macOS-$APP_VERSION-universal.dmg"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: notarized-macos
+          path: release/*.dmg
+          if-no-files-found: error
+          overwrite: true
+
+  publish:
+    name: Verify or publish installers
+    needs: [prepare, build, notarize]
+    if: >-
+      !cancelled() && needs.prepare.result == 'success' &&
+      (needs.prepare.outputs.build_run != '' || needs.build.result == 'success') &&
+      (needs.prepare.outputs.notarize != 'true' || needs.notarize.result == 'success')
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: ${{ needs.prepare.outputs.notarize == 'true' && 'installer-windows-*' || 'installer-*' }}
+          path: release
+          merge-multiple: true
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.prepare.outputs.build_run || github.run_id }}
+      - uses: actions/download-artifact@v8
+        if: needs.prepare.outputs.notarize == 'true'
+        with:
+          name: notarized-macos
+          path: release
+      - name: Verify installers without publishing
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          APP_VERSION: ${{ needs.prepare.outputs.version }}
+        working-directory: release
+        run: sha256sum "Link-Selector-macOS-$APP_VERSION-universal.dmg" "Link-Selector-Windows-$APP_VERSION-x64-setup.exe" "Link-Selector-Windows-$APP_VERSION-arm64-setup.exe"
+      - name: Publish GitHub Release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NOTARIZE: ${{ needs.prepare.outputs.notarize }}
+        working-directory: release
+        run: |
+          if [[ "$NOTARIZE" != true ]]; then
+            echo '::warning::Developer ID credentials are absent. The macOS DMG is ad-hoc signed and unnotarized.'
+          fi
+          bash ../scripts/publish-release.sh "$GITHUB_REF_NAME" "$GITHUB_REPOSITORY" \
+            "../release-notes/$GITHUB_REF_NAME.md"

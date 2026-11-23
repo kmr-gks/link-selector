@@ -42,9 +42,11 @@ cargo test --manifest-path src-tauri/Cargo.toml --locked
 
 ## CIとリリース
 
-[GitHub Actions](https://github.com/kmr-gks/link-selector/actions/workflows/build.yml) は、`main` へのpushとプルリクエストで、両OSのテスト、インストーラーのビルド、配布物の検証を実行します。各実行の成果物からmacOS用DMGとWindows用のx64・Arm64インストーラーを取得できます。Windows CIでは各OSアーキテクチャのランナーで、インストールされた実行ファイルのアーキテクチャ、選択画面の起動、既定アプリ登録とアンインストールを確認します。
+[GitHub Actions](https://github.com/kmr-gks/link-selector/actions/workflows/build.yml) は、`main` へのpushとプルリクエストで、両OSのテスト、インストーラーのビルド、配布物の検証を実行します。共通の画面テストとビルドは1回実行し、その結果を3種類のビルドで使います。各実行の成果物からmacOS用DMGとWindows用のx64・Arm64インストーラーを取得できます。Windows CIでは各OSアーキテクチャのランナーで、インストールされた実行ファイルのアーキテクチャ、選択画面の起動、既定アプリ登録とアンインストールを確認します。
 
 `v0.2.0` のようにアプリのバージョンと一致するタグをpushすると、両OSの検証を通過した後に [GitHub Releases](https://github.com/kmr-gks/link-selector/releases) へインストーラーとSHA-256チェックサムを公開します。インストーラー名にはアプリ名、OS名、バージョン、アーキテクチャが含まれます。macOS版は、署名・公証の設定があるタグではDeveloper IDで署名し、Appleの公証チケットを添付して公開します。設定がない場合はアドホック署名のDMGを公開します。Windows版は開発者証明書による署名前のビルドです。
+
+タグをpushすると、[公開ワークフロー](https://github.com/kmr-gks/link-selector/actions/workflows/release.yml) は同じコミットの成功済み `main` ビルドから配布物を取得します。該当するビルドや有効な成果物がない場合は、タグのコミットでテストとビルドを実行します。公開ワークフローを `main` で手動実行すると、再利用する成果物を確認できます。
 
 タグを付ける前に、`release-notes/v<バージョン>.md` に利用者から見える変更点を具体的な日本語で記載します。公開時に、その内容とGitHubが生成する差分リンクをリリース本文に掲載します。
 
