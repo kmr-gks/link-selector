@@ -47,6 +47,7 @@ pub struct Link {
     pub url: Url,
     pub presented: Option<Dimensions>,
     awaiting_normal_size: bool,
+    fit_padding: Option<f64>,
     pub slot: usize,
     launch: LaunchState,
 }
@@ -80,6 +81,7 @@ impl PendingLinks {
                     url,
                     presented: None,
                     awaiting_normal_size: false,
+                    fit_padding: None,
                     slot,
                     launch: LaunchState::Idle,
                 },
@@ -102,6 +104,15 @@ impl PendingLinks {
             link.presented = Some(size);
             link.awaiting_normal_size = false;
         }
+    }
+
+    pub fn fit_padding(&mut self, window: &str, id: u64, measured: Option<f64>) -> f64 {
+        let Some(link) = self.by_window.get_mut(window).filter(|link| link.id == id) else {
+            return 0.0;
+        };
+        // Later layout messages can still describe the viewport before a resize.
+        link.fit_padding = link.fit_padding.or(measured);
+        link.fit_padding.unwrap_or_default()
     }
 
     pub fn track_restored_size(&mut self, window: &str, id: u64) {
@@ -162,6 +173,7 @@ impl PendingLinks {
         };
         link.slot = 0;
         link.presented = None;
+        link.fit_padding = None;
         link.awaiting_normal_size = false;
         self.by_window.insert(MAIN_WINDOW.to_owned(), link);
         true
@@ -481,6 +493,17 @@ mod tests {
         assert!(links.finish(MAIN_WINDOW, 1).is_none());
         assert_eq!(links.get_with_id(MAIN_WINDOW, 3).unwrap().url, link);
         assert_eq!(links.get_with_id("picker-2", 2).unwrap().url, link);
+    }
+
+    #[test]
+    fn later_fit_requests_reuse_the_original_viewport_padding() {
+        let mut links = PendingLinks::default();
+        links.add([url("https://example.com/first")]);
+        assert_eq!(links.fit_padding(MAIN_WINDOW, 1, Some(32.0)), 32.0);
+        assert_eq!(links.fit_padding(MAIN_WINDOW, 1, Some(55.0)), 32.0);
+        links.finish(MAIN_WINDOW, 1).unwrap();
+        links.add([url("https://example.com/next")]);
+        assert_eq!(links.fit_padding(MAIN_WINDOW, 2, Some(25.0)), 25.0);
     }
 
     #[test]

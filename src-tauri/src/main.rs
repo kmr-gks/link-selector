@@ -193,6 +193,7 @@ fn open_settings() -> Result<(), String> {
 fn fit_picker(
     window: WebviewWindow,
     content_height: Option<u32>,
+    viewport_height: Option<u32>,
     id: Option<u64>,
     grow_only: Option<bool>,
 ) -> tauri::Result<()> {
@@ -241,15 +242,17 @@ fn fit_picker(
     let height = if let Some(size) = preferred {
         (size.height * scale).ceil() as u32
     } else if let Some(content) = content_height {
-        // Read both native dimensions in the same fit, even when the web page
-        // still has a layout from before the last native resize.
-        picker_size::fit_content_height(
-            content,
-            default_height,
-            scale,
-            inner.height,
-            window.as_ref().size()?.height,
-        )
+        let measured = viewport_height
+            .filter(|height| *height > 0)
+            .map(|height| (f64::from(inner.height) / scale - f64::from(height)).max(0.0));
+        let padding = id.map_or(0.0, |id| {
+            window
+                .state::<Mutex<PendingLinks>>()
+                .lock()
+                .unwrap()
+                .fit_padding(window.label(), id, measured)
+        });
+        ((f64::from(content) + padding).max(default_height) * scale).ceil() as u32
     } else {
         (default_height * scale).ceil() as u32
     };
@@ -478,7 +481,7 @@ fn show_window(window: &WebviewWindow) {
             .preferred
             .is_some();
         if has_preferred_size {
-            let _ = fit_picker(window.clone(), None, None, None);
+            let _ = fit_picker(window.clone(), None, None, None, None);
         }
     }
     let _ = window.unminimize();
@@ -547,7 +550,7 @@ fn main() {
             app.manage(Mutex::new(size));
             if has_preferred_size {
                 if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
-                    let _ = fit_picker(window, None, None, None);
+                    let _ = fit_picker(window, None, None, None, None);
                 }
             }
             Ok(())
