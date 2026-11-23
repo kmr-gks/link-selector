@@ -39,6 +39,11 @@ else
     create_draft=true
 fi
 
+# The prepare job uses the same asset check before downloading or building anything.
+if [[ ${3:-} == --check ]]; then
+    exit 10
+fi
+
 sha256sum "${files[@]}" > SHA256SUMS.txt
 if [[ "$create_draft" == true ]]; then
     notes_file=${3:?Provide the Japanese release notes file}

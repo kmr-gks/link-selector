@@ -22,12 +22,13 @@ jobs:
     outputs:
       build_run: ${{ steps.prepare.outputs.build_run }}
       version: ${{ steps.prepare.outputs.version }}
+      published: ${{ steps.prepare.outputs.published }}
       notarize: ${{ steps.prepare.outputs.notarize }}
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
-      - name: Find artifacts for this exact commit
+      - name: Check the release and stage installers for this exact commit
         id: prepare
         shell: bash
         env:
@@ -44,9 +45,16 @@ jobs:
               echo "Missing Japanese release notes for $GITHUB_REF_NAME" >&2
               exit 1
             fi
+            status=0
+            bash scripts/publish-release.sh "$GITHUB_REF_NAME" "$GITHUB_REPOSITORY" --check || status=$?
+            case "$status" in
+              0) echo 'published=true' >> "$GITHUB_OUTPUT"; exit 0 ;;
+              10) ;;
+              *) exit "$status" ;;
+            esac
           fi
           commit=$(git rev-parse 'HEAD^{commit}')
-          build_run=$(bash scripts/find-release-build.sh "$GITHUB_REPOSITORY" "$commit")
+          build_run=$(bash scripts/stage-release-build.sh "$GITHUB_REPOSITORY" "$commit" "$version" "$NOTARIZE" staged)
           if [[ -n "$build_run" ]]; then
             echo "Reusing the verified build at https://github.com/$GITHUB_REPOSITORY/actions/runs/$build_run"
           elif [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
@@ -61,10 +69,25 @@ jobs:
             echo "notarize=$NOTARIZE"
           } >> "$GITHUB_OUTPUT"
 
+      - uses: actions/upload-artifact@v7
+        if: steps.prepare.outputs.build_run != ''
+        with:
+          name: release-installers
+          path: staged/installers/
+          if-no-files-found: error
+          overwrite: true
+      - uses: actions/upload-artifact@v7
+        if: steps.prepare.outputs.build_run != '' && steps.prepare.outputs.notarize == 'true'
+        with:
+          name: release-macos-app
+          path: staged/macos-app/
+          if-no-files-found: error
+          overwrite: true
+
   build:
     name: Build tag when artifacts are unavailable
     needs: prepare
-    if: github.event_name == 'push' && needs.prepare.outputs.build_run == ''
+    if: github.event_name == 'push' && needs.prepare.outputs.published != 'true' && needs.prepare.outputs.build_run == ''
     uses: ./.github/workflows/build.yml
 
   notarize:
@@ -84,10 +107,8 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@v8
         with:
-          name: macos-app
+          name: ${{ needs.prepare.outputs.build_run != '' && 'release-macos-app' || 'macos-app' }}
           path: macos-app
-          github-token: ${{ github.token }}
-          run-id: ${{ needs.prepare.outputs.build_run || github.run_id }}
       - name: Package and notarize the tested macOS app
         shell: bash
         env:
@@ -125,12 +146,16 @@ jobs:
         with:
           persist-credentials: false
       - uses: actions/download-artifact@v8
+        if: needs.prepare.outputs.build_run != ''
+        with:
+          name: release-installers
+          path: release
+      - uses: actions/download-artifact@v8
+        if: needs.prepare.outputs.build_run == ''
         with:
           pattern: ${{ needs.prepare.outputs.notarize == 'true' && 'installer-windows-*' || 'installer-*' }}
           path: release
           merge-multiple: true
-          github-token: ${{ github.token }}
-          run-id: ${{ needs.prepare.outputs.build_run || github.run_id }}
       - uses: actions/download-artifact@v8
         if: needs.prepare.outputs.notarize == 'true'
         with:

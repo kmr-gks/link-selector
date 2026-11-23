@@ -68,6 +68,23 @@ grep -Fxq -- '--clobber' upload.log
 grep -Fxq -- '--draft=false' edit.log
 rm create.log upload.log edit.log SHA256SUMS.txt
 
+# The early check succeeds with no installers in the working directory.
+mkdir check-only
+(
+    cd check-only
+    RELEASE_STATE=published bash "$publish" v1.2.3 owner/repo --check
+    for state in missing managed; do
+        status=0
+        RELEASE_STATE=$state bash "$publish" v1.2.3 owner/repo --check || status=$?
+        [[ $status == 10 ]]
+    done
+    for state in incomplete draft; do
+        status=0
+        RELEASE_STATE=$state bash "$publish" v1.2.3 owner/repo --check || status=$?
+        [[ $status == 1 ]]
+    done
+    [[ ! -e create.log && ! -e upload.log && ! -e SHA256SUMS.txt ]]
+)
 RELEASE_STATE=published bash "$publish" v1.2.3 owner/repo
 [[ ! -e create.log && ! -e SHA256SUMS.txt ]]
 if RELEASE_STATE=incomplete bash "$publish" v1.2.3 owner/repo; then

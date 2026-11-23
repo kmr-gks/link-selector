@@ -1,9 +1,40 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-find_build="$(cd "$(dirname "$0")" && pwd)/find-release-build.sh"
+scripts="$(cd "$(dirname "$0")" && pwd)"
+find_build="$scripts/find-release-build.sh"
 gh() {
-    local state
+    local state destination name
+    if [[ $1 == run && $2 == download ]]; then
+        [[ $3 == 90 ]] || return 1
+        destination=${!#}
+        while [[ $# -gt 1 ]]; do
+            if [[ $1 == --name ]]; then
+                name=$2
+                case "$name" in
+                    installer-macos) file=Link-Selector-macOS-1.2.3-universal.dmg ;;
+                    installer-windows-x64) file=Link-Selector-Windows-1.2.3-x64-setup.exe ;;
+                    installer-windows-arm64)
+                        case ${DOWNLOAD_STATE:-} in
+                            expired) return 1 ;;
+                            partial) shift 2; continue ;;
+                        esac
+                        file=Link-Selector-Windows-1.2.3-arm64-setup.exe ;;
+                    macos-app)
+                        [[ ${DOWNLOAD_STATE:-} != app-expired ]] || return 1
+                        mkdir -p "$destination"
+                        printf 'app' > "$destination/macos-app.zip"
+                        return ;;
+                    *) return 2 ;;
+                esac
+                mkdir -p "$destination/$name"
+                printf 'installer' > "$destination/$name/$file"
+                shift
+            fi
+            shift
+        done
+        return 0
+    fi
     case "${4:-}" in
         repos/owner/repo/actions/workflows/build.yml/runs)
             jq -n '
@@ -41,3 +72,20 @@ selected=$(bash "$find_build" owner/repo 123)
 [[ "$selected" == 90 ]]
 selected=$(FINAL_BUILD_STATE=missing bash "$find_build" owner/repo 123)
 [[ -z "$selected" ]]
+
+
+scratch=$(mktemp -d)
+trap 'rm -rf -- "$scratch"' EXIT
+
+# The API still reports all artifacts, but expiry during transfer must select a tag build.
+for state in expired partial app-expired; do
+    selected=$(DOWNLOAD_STATE=$state bash "$scripts/stage-release-build.sh" owner/repo 123 1.2.3 true "$scratch/$state")
+    [[ -z "$selected" && ! -e "$scratch/$state" ]]
+done
+selected=$(bash "$scripts/stage-release-build.sh" owner/repo 123 1.2.3 false "$scratch/plain")
+[[ $selected == 90 && -s "$scratch/plain/installers/Link-Selector-macOS-1.2.3-universal.dmg" ]]
+[[ ! -e "$scratch/plain/macos-app" ]]
+selected=$(bash "$scripts/stage-release-build.sh" owner/repo 123 1.2.3 true "$scratch/signed")
+[[ $selected == 90 && -s "$scratch/signed/macos-app/macos-app.zip" ]]
+[[ -s "$scratch/signed/installers/Link-Selector-Windows-1.2.3-arm64-setup.exe" ]]
+[[ ! -e "$scratch/signed/installers/Link-Selector-macOS-1.2.3-universal.dmg" ]]
