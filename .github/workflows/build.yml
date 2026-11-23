@@ -57,6 +57,11 @@ jobs:
         timeout-minutes: 1
         shell: powershell
         run: ./scripts/test-windows-timeout.ps1
+      - name: Test Firefox MSIX cleanup
+        if: runner.os == 'Windows'
+        timeout-minutes: 1
+        shell: powershell
+        run: ./scripts/test-windows-msix-cleanup.ps1
       - name: Test Firefox MSIX protocol activation
         if: runner.os == 'Windows'
         timeout-minutes: 10

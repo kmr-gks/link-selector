@@ -8,6 +8,7 @@ $checksum = '26AE4A6F0E963B3DE9F73C8F61E0B4D843A23565C1B3AF65715404EE0721B5D4'
 
 $before = @(Get-AppxPackage '*Firefox*' | Select-Object -ExpandProperty PackageFullName)
 $package = $null
+$canRemovePackage = $true
 try {
     Invoke-WebRequest -UseBasicParsing -Uri $source -OutFile $msix -TimeoutSec 360
     if ((Get-FileHash $msix -Algorithm SHA256).Hash -ne $checksum) {
@@ -22,14 +23,21 @@ try {
     $cargoArguments = '+stable test --manifest-path src-tauri/Cargo.toml --locked selected_firefox_msix_receives_the_link -- --ignored'
     $exitCode = Invoke-WindowsTestProcess $cargo $cargoArguments 120
     if ($exitCode -ne 0) { throw "Firefox MSIX link activation failed with exit code $exitCode" }
+} catch [WindowsTestJobCleanupException] {
+    $canRemovePackage = $false
+    Write-Warning 'Leaving the Firefox MSIX installed because the test process tree has not been confirmed stopped.'
+    throw
 } finally {
-    if ($null -ne $package) {
-        Get-Process firefox -ErrorAction SilentlyContinue |
-            Where-Object { $_.Path -like "$($package.InstallLocation)\*" } |
-            Stop-Process -Force
-        Remove-AppxPackage -Package $package.PackageFullName
-    }
-    if (Test-Path -LiteralPath $msix) {
-        Remove-Item -LiteralPath $msix
+    try {
+        if ($canRemovePackage -and $null -ne $package) {
+            Get-Process firefox -ErrorAction SilentlyContinue |
+                Where-Object { $_.Path -like "$($package.InstallLocation)\*" } |
+                Stop-Process -Force
+            Remove-AppxPackage -Package $package.PackageFullName
+        }
+    } finally {
+        if (Test-Path -LiteralPath $msix) {
+            Remove-Item -LiteralPath $msix
+        }
     }
 }

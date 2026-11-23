@@ -5,8 +5,18 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 
+public sealed class WindowsTestJobCleanupException : InvalidOperationException
+{
+    public WindowsTestJobCleanupException(Exception inner)
+        : base("Could not confirm that the Windows test process tree exited", inner)
+    {
+    }
+}
+
 public static class WindowsTestJob
 {
+    private const int CleanupTimeoutMilliseconds = 5000;
+
     public static int Run(string executable, string arguments, string directory, int timeoutSeconds)
     {
         IntPtr job = CreateJobObject(IntPtr.Zero, null);
@@ -40,7 +50,11 @@ public static class WindowsTestJob
             try
             {
                 if (assigned) StopJob(job);
-                else if (process.Process != IntPtr.Zero) Check(TerminateProcess(process.Process, 1));
+                else if (process.Process != IntPtr.Zero) StopSuspendedProcess(process.Process);
+            }
+            catch (Exception error)
+            {
+                throw new WindowsTestJobCleanupException(error);
             }
             finally
             {
@@ -49,6 +63,17 @@ public static class WindowsTestJob
                 CloseHandle(job);
             }
         }
+    }
+
+    private static void StopSuspendedProcess(IntPtr process)
+    {
+        uint wait = WaitForSingleObject(process, 0);
+        if (wait == 0) return;
+        Check(wait == 258);
+        Check(TerminateProcess(process, 1));
+        wait = WaitForSingleObject(process, CleanupTimeoutMilliseconds);
+        if (wait == 258) throw new InvalidOperationException("The suspended test process did not terminate");
+        Check(wait == 0);
     }
 
     private static void StopJob(IntPtr job)
@@ -64,7 +89,7 @@ public static class WindowsTestJob
             Check(QueryInformationJobObject(job, 1, out accounting, size, IntPtr.Zero));
             if (accounting.Active == 0) return;
             Thread.Sleep(25);
-        } while (clock.ElapsedMilliseconds < 5000);
+        } while (clock.ElapsedMilliseconds < CleanupTimeoutMilliseconds);
         throw new InvalidOperationException("The test job still contains active processes after termination");
     }
 
