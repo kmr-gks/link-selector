@@ -350,6 +350,31 @@ describe("main picker initialization", () => {
     await vi.waitFor(() => expect(document.querySelector(".link-url")?.textContent).toBe("https://example.com/next"));
   });
 
+  it("reconciles links queued before the deferred listener registers", async () => {
+    let finishSubscription!: () => void;
+    const deferredSubscription = new Promise<() => void>((resolve) => {
+      finishSubscription = () => resolve(() => {});
+    });
+    subscribe.mockImplementation(async (event) =>
+      event === pickerDeferred ? deferredSubscription : () => {});
+    request.mockImplementation(async (command) => {
+      if (command === "picker_state") return { ...link, waiting: 0 } as never;
+      if (command === "picker_waiting") return [link.id, 1] as never;
+      return undefined as never;
+    });
+    await import("../src/main");
+    await vi.waitFor(() => expect(document.querySelector(".link-url")?.textContent).toBe(link.url));
+    expect(document.querySelector(".waiting")?.textContent).toBe("");
+    expect(request).not.toHaveBeenCalledWith("picker_waiting");
+
+    const originalButton = document.querySelector("button.browser");
+    finishSubscription();
+    await vi.waitFor(() => expect(document.querySelector(".waiting")?.textContent).toContain("1 件"));
+    expect(request.mock.calls.filter(([command]) => command === "picker_waiting")).toEqual([["picker_waiting"]]);
+    expect(document.querySelector("button.browser")).toBe(originalButton);
+    expect(request.mock.calls.filter(([command]) => command === "picker_state")).toEqual([["picker_state"]]);
+  });
+
   it("recovers manually after a persistent failure while retaining the working subscription", async () => {
     failEvent = queueChanged;
     failuresRemaining = Infinity;

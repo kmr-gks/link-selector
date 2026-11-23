@@ -249,14 +249,15 @@ window.addEventListener("keydown", (event) => {
   }
 });
 
-function subscribeOnce<T>(event: string, handler: EventCallback<T>) {
+function subscribeOnce<T>(event: string, handler: EventCallback<T>, onSubscribed?: () => void) {
   let subscription: Promise<unknown> | undefined;
   return () => subscription ??= listen(event, handler)
     .catch(() => listen(event, handler))
     .catch((error) => {
       subscription = undefined;
       throw error;
-    });
+    })
+    .then(onSubscribed);
 }
 
 const subscribeToPickerChanges = subscribeOnce("main-picker-changed", () => {
@@ -265,8 +266,9 @@ const subscribeToPickerChanges = subscribeOnce("main-picker-changed", () => {
     void refresh();
   }
 });
-const subscribeToDeferred = subscribeOnce<[number, number]>("picker-deferred", ({ payload }) => {
-  const [id, count] = payload;
+type Waiting = [id: number, count: number];
+
+function updateWaiting([id, count]: Waiting) {
   if (deferredDuringRefresh) {
     deferredDuringRefresh.set(id, Math.max(count, deferredDuringRefresh.get(id) ?? 0));
   }
@@ -277,6 +279,17 @@ const subscribeToDeferred = subscribeOnce<[number, number]>("picker-deferred", (
   if (waiting && waiting.textContent !== message) {
     waiting.textContent = message;
     fitPicker(app.querySelector<HTMLUListElement>(".browsers") ?? undefined, true);
+  }
+}
+
+const subscribeToDeferred = subscribeOnce<Waiting>("picker-deferred", ({ payload }) => {
+  updateWaiting(payload);
+}, () => {
+  // If the first snapshot already started, reconcile links queued before registration.
+  if (listenersReady) {
+    void invoke<Waiting | null>("picker_waiting").then((waiting) => {
+      if (waiting) updateWaiting(waiting);
+    }).catch(() => {});
   }
 });
 

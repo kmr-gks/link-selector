@@ -61,6 +61,19 @@ fn picker_state(window: WebviewWindow, state: State<'_, Mutex<PendingLinks>>) ->
 }
 
 #[tauri::command]
+fn picker_waiting(
+    window: WebviewWindow,
+    state: State<'_, Mutex<PendingLinks>>,
+) -> Option<(u64, usize)> {
+    if window.label() != MAIN_WINDOW {
+        return None;
+    }
+    let pending = state.lock().unwrap();
+    let link = pending.get(MAIN_WINDOW)?;
+    Some((link.id, pending.deferred_count()))
+}
+
+#[tauri::command]
 fn picker_icons(
     window: WebviewWindow,
     pending: State<'_, Mutex<PendingLinks>>,
@@ -542,6 +555,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             picker_state,
             picker_icons,
+            picker_waiting,
             open_browser,
             cancel_link,
             copy_link,
