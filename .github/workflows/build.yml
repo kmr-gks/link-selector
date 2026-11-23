@@ -83,8 +83,8 @@ jobs:
           cargo +stable test --manifest-path src-tauri/Cargo.toml --locked "${target_args[@]}"
       - name: Test Windows subprocess timeout
         if: runner.os == 'Windows'
-        timeout-minutes: 1
-        shell: powershell
+        timeout-minutes: 3
+        shell: pwsh
         run: ./scripts/test-windows-timeout.ps1
       - name: Test Firefox MSIX cleanup
         if: runner.os == 'Windows'

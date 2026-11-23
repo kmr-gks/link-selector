@@ -14,15 +14,18 @@ try {
     $marker = Join-Path $scratch 'child-pid.txt'
     @'
 $child = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\ping.exe') `
-    -ArgumentList '-n 90 127.0.0.1' -PassThru
+    -ArgumentList '-n 180 127.0.0.1' -PassThru
 Set-Content -LiteralPath (Join-Path $PSScriptRoot 'child-pid.txt') -Value $child.Id
 $child.WaitForExit()
 '@ | Set-Content -LiteralPath $fixture
-    $powershell = Join-Path $PSHOME 'powershell.exe'
+    $powershell = (Get-Process -Id $PID).Path
     try {
-        Invoke-WindowsTestProcess $powershell "-NoProfile -File `"$fixture`"" 20 | Out-Null
+        Invoke-WindowsTestProcess $powershell "-NoLogo -NoProfile -NonInteractive -File `"$fixture`"" 60 | Out-Null
         throw 'Expected a timeout'
     } catch [System.TimeoutException] {
+        if (-not (Test-Path -LiteralPath $marker)) {
+            throw 'The timeout fixture did not start its child before the deadline'
+        }
         $childId = [int](Get-Content -LiteralPath $marker)
         if (Get-Process -Id $childId -ErrorAction SilentlyContinue) {
             throw "The child process survived the test job timeout: $childId"
