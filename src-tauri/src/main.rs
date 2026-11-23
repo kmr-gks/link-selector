@@ -572,17 +572,17 @@ fn main() {
             }
             #[cfg(target_os = "windows")]
             RunEvent::Ready => {
-                let startup = app.state::<Mutex<links::StartupLinks>>();
-                let forwarded = startup.lock().unwrap().ready();
                 let initial = std::env::args_os()
                     .skip(1)
                     .filter_map(|arg| arg.into_string().ok())
                     .filter_map(|arg| Url::parse(&arg).ok());
-                receive_links(app, initial.chain(forwarded).collect());
+                let startup = app.state::<Mutex<links::StartupLinks>>();
+                let urls = startup.lock().unwrap().ready(initial);
+                receive_links(app, urls);
             }
             #[cfg(target_os = "macos")]
             RunEvent::Ready => {
-                receive_links(app, startup_links.ready());
+                receive_links(app, startup_links.ready([]));
             }
             #[cfg(target_os = "macos")]
             RunEvent::Reopen { .. } => reopen(app),

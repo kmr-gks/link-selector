@@ -26,8 +26,11 @@ impl StartupLinks {
         }
     }
 
-    pub fn ready(&mut self) -> Vec<Url> {
-        self.0.take().unwrap_or_default()
+    pub fn ready(&mut self, initial: impl IntoIterator<Item = Url>) -> Vec<Url> {
+        initial
+            .into_iter()
+            .chain(self.0.take().unwrap_or_default())
+            .collect()
     }
 }
 
@@ -403,9 +406,36 @@ mod tests {
         let third = url("https://example.com/next");
         assert_eq!(startup.route(vec![first.clone()]), None);
         assert_eq!(startup.route(vec![second.clone()]), None);
-        assert_eq!(startup.ready(), vec![first, second]);
-        assert!(startup.ready().is_empty());
+        assert_eq!(startup.ready([]), vec![first, second]);
+        assert!(startup.ready([]).is_empty());
         assert_eq!(startup.route(vec![third.clone()]), Some(vec![third]));
+    }
+
+    #[test]
+    fn opens_initial_windows_arguments_before_links_forwarded_during_startup() {
+        let mut startup = StartupLinks::default();
+        let mut pending = PendingLinks::default();
+
+        for address in ["https://example.com/forwarded", "http://example.com/next"] {
+            let urls = startup.route(vec![url(address)]);
+            assert!(urls.is_none());
+        }
+        assert!(pending.get(MAIN_WINDOW).is_none());
+
+        let ready = startup.ready([url("https://example.com/initial")]);
+        let windows = pending.add(ready);
+        assert_eq!(windows, ["main", "picker-2", "picker-3"]);
+        let paths: Vec<_> = windows
+            .iter()
+            .map(|window| pending.get(window).unwrap().url.path())
+            .collect();
+        assert_eq!(paths, ["/initial", "/forwarded", "/next"]);
+        assert!(startup.ready([]).is_empty());
+
+        let running = startup
+            .route(vec![url("https://example.com/running")])
+            .unwrap();
+        assert_eq!(pending.add(running), ["picker-4"]);
     }
 
     #[test]
