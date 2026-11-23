@@ -322,14 +322,24 @@ describe("main picker initialization", () => {
     expect(request).toHaveBeenCalledWith("picker_state");
   });
 
-  it("recovers manually after a persistent failure while retaining the working subscription", async () => {
+  it("keeps showing links when only the deferred notification fails", async () => {
     failEvent = pickerDeferred;
+    failuresRemaining = Infinity;
+    request.mockResolvedValueOnce(link as never);
+    await import("../src/main");
+    await vi.waitFor(() => expect(document.querySelector("button.browser")).not.toBeNull());
+    request.mockResolvedValueOnce({ ...link, id: 8, url: "https://example.com/next" } as never);
+    subscriptions.get(queueChanged)!(undefined);
+    await vi.waitFor(() => expect(document.querySelector(".link-url")?.textContent).toBe("https://example.com/next"));
+  });
+
+  it("recovers manually after a persistent failure while retaining the working subscription", async () => {
+    failEvent = queueChanged;
     failuresRemaining = Infinity;
     await import("../src/main");
     await vi.waitFor(() => {
       expect(document.querySelector('[role="alert"]')?.textContent).toBe("選択画面を初期化できませんでした。");
     });
-    subscriptions.get(queueChanged)!(undefined);
     expect(request).not.toHaveBeenCalledWith("picker_state");
 
     failuresRemaining = 0;
@@ -338,8 +348,8 @@ describe("main picker initialization", () => {
     retry.click();
     retry.click();
     await vi.waitFor(() => expect(document.querySelector(".link-url")?.textContent).toBe(link.url));
-    expect(subscribe.mock.calls.filter(([name]) => name === queueChanged)).toHaveLength(1);
-    expect(subscribe.mock.calls.filter(([name]) => name === pickerDeferred)).toHaveLength(3);
+    expect(subscribe.mock.calls.filter(([name]) => name === queueChanged)).toHaveLength(3);
+    expect(subscribe.mock.calls.filter(([name]) => name === pickerDeferred)).toHaveLength(1);
     expect(document.querySelector(".waiting")?.textContent).toContain("2 件");
     subscriptions.get(pickerDeferred)!([link.id, 3]);
     expect(document.querySelector(".waiting")?.textContent).toContain("3 件");

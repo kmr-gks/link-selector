@@ -246,16 +246,20 @@ window.addEventListener("keydown", (event) => {
 });
 
 function subscribeOnce<T>(event: string, handler: EventCallback<T>) {
-  let subscribed = false;
-  return async () => {
-    if (subscribed) return;
-    await listen(event, handler).catch(() => listen(event, handler));
-    subscribed = true;
-  };
+  let subscription: Promise<unknown> | undefined;
+  return () => subscription ??= listen(event, handler)
+    .catch(() => listen(event, handler))
+    .catch((error) => {
+      subscription = undefined;
+      throw error;
+    });
 }
 
 const subscribeToPickerChanges = subscribeOnce("main-picker-changed", () => {
-  if (listenersReady) void refresh();
+  if (listenersReady) {
+    void subscribeToDeferred().catch(() => {});
+    void refresh();
+  }
 });
 const subscribeToDeferred = subscribeOnce<[number, number]>("picker-deferred", ({ payload }) => {
   const [id, count] = payload;
@@ -269,8 +273,10 @@ const subscribeToDeferred = subscribeOnce<[number, number]>("picker-deferred", (
 });
 
 async function initializePicker() {
-  const subscriptions = await Promise.allSettled([subscribeToPickerChanges(), subscribeToDeferred()]);
-  if (subscriptions.some((subscription) => subscription.status === "rejected")) {
+  void subscribeToDeferred().catch(() => {});
+  try {
+    await subscribeToPickerChanges();
+  } catch {
     showLoadError("選択画面を初期化できませんでした。", initializePicker);
     return;
   }
