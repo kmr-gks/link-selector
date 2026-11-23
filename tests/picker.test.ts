@@ -44,6 +44,10 @@ describe("browser picker", () => {
     picker = { ...link };
     failedLaunch = false;
     request.mockReset();
+    request.mockResolvedValueOnce(null as never);
+    emitQueueChange();
+    await vi.waitFor(() => expect(document.querySelector(".link-url")).toBeNull());
+    request.mockClear();
     request.mockImplementation(async (command) => {
       if (command === "picker_state") return picker as never;
       if (command === "open_browser" && failedLaunch) throw "ブラウザを開けませんでした。";
@@ -150,6 +154,28 @@ describe("browser picker", () => {
     failLaunch("ブラウザを開けませんでした。");
     await vi.waitFor(() => expect(document.querySelector(".status")?.textContent).toBe("ブラウザを開けませんでした。"));
     expect(choices.every((choice) => !choice.disabled)).toBe(true);
+  });
+
+  it("keeps a processed link unavailable while its replacement is loading", async () => {
+    let resolveNext!: (view: typeof link) => void;
+    const next = new Promise<typeof link>((resolve) => { resolveNext = resolve; });
+    request.mockImplementation(async (command) => {
+      if (command === "picker_state") return next as never;
+      if (command === "open_browser") emitQueueChange();
+      return undefined as never;
+    });
+    const choice = document.querySelector<HTMLButtonElement>(".browser")!;
+    choice.click();
+    await vi.waitFor(() => expect(document.querySelector(".status")?.textContent).toBe(""));
+    expect(choice.disabled).toBe(true);
+    choice.click();
+    key("1");
+    expect(request.mock.calls.filter(([command]) => command === "open_browser")).toHaveLength(1);
+    resolveNext({ ...link, id: 8, url: "https://example.com/next" });
+    await vi.waitFor(() => {
+      expect(document.querySelector(".link-url")?.textContent).toBe("https://example.com/next");
+      expect(document.querySelector<HTMLButtonElement>(".browser")?.disabled).toBe(false);
+    });
   });
 
   it("blocks browser choices and repeated cancellation until the cancelled picker is replaced", async () => {

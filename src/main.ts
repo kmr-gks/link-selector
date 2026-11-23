@@ -22,7 +22,7 @@ let current: Picker | null = null;
 let requestNumber = 0;
 let launchingLinkId: number | undefined;
 let statusMessage = "";
-let cancellingLinkId: number | undefined;
+let closingLinkId: number | undefined;
 let deferredDuringRefresh: Map<number, number> | undefined;
 let listenersReady = false;
 
@@ -68,7 +68,7 @@ async function refresh() {
     if (view) {
       view.waiting = Math.max(view.waiting, notifications.get(view.id) ?? 0);
     }
-    if (view?.id !== cancellingLinkId) cancellingLinkId = undefined;
+    if (view?.id !== closingLinkId) closingLinkId = undefined;
     if (view?.id !== current?.id) statusMessage = "";
     current = view;
     render();
@@ -83,7 +83,7 @@ async function refresh() {
 }
 
 function browserChoicesDisabled(id: number) {
-  return id === launchingLinkId || id === cancellingLinkId;
+  return id === launchingLinkId || id === closingLinkId;
 }
 
 function updateBrowserChoices(id: number) {
@@ -94,19 +94,20 @@ function updateBrowserChoices(id: number) {
 }
 
 async function processLink(command: "open_browser" | "cancel_link", browser?: Browser) {
-  if (!current || current.id === cancellingLinkId || (current.id === launchingLinkId && command === "open_browser")) return;
+  if (!current || current.id === closingLinkId || (current.id === launchingLinkId && command === "open_browser")) return;
   const { id } = current;
   if (command === "open_browser") {
     launchingLinkId = id;
     setStatus("");
   } else {
-    cancellingLinkId = id;
+    closingLinkId = id;
   }
   updateBrowserChoices(id);
   try {
     await invoke(command, { id, browserId: browser?.id });
+    if (command === "open_browser" && current?.id === id) closingLinkId = id;
   } catch (error) {
-    if (command === "cancel_link" && cancellingLinkId === id) cancellingLinkId = undefined;
+    if (command === "cancel_link" && closingLinkId === id) closingLinkId = undefined;
     if (current?.id === id) statusMessage = String(error);
   } finally {
     if (command === "open_browser" && launchingLinkId === id) launchingLinkId = undefined;
