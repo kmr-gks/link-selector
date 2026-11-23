@@ -6,27 +6,42 @@ repository=${2:?Provide the GitHub repository}
 version=${tag#v}
 files=("Link-Selector-macOS-$version-universal.dmg" "Link-Selector-Windows-$version-x64-setup.exe")
 
-if existing=$(gh release view "$tag" --repo "$repository" --json isDraft,assets \
-    --jq '.isDraft, (.assets[] | select(.state == "uploaded" and .size > 0) | .name)'); then
+create_draft=false
+marker='<!-- link-selector:managed-release -->'
+
+if existing=$(gh release view "$tag" --repo "$repository" --json isDraft,body \
+    --jq '.isDraft, (.body // "")'); then
     existing=${existing//$'\r'/}
-    if [[ ${existing%%$'\n'*} != false ]]; then
-        echo "Release $tag is still a draft." >&2
+    if [[ ${existing%%$'\n'*} == false ]]; then
+        # Query names alone so lines in release notes cannot satisfy the asset check.
+        uploaded=$(gh release view "$tag" --repo "$repository" --json assets \
+            --jq '.assets[] | select(.state == "uploaded" and .size > 0) | .name')
+        uploaded=${uploaded//$'\r'/}
+        for file in "${files[@]}" SHA256SUMS.txt; do
+            if ! grep -Fxq -- "$file" <<< "$uploaded"; then
+                echo "Published release $tag is missing a complete upload of $file." >&2
+                exit 1
+            fi
+        done
+        echo "Release $tag already contains the expected assets."
+        exit 0
+    fi
+    notes=${existing#*$'\n'}
+    if [[ ${notes%%$'\n'*} != "$marker" ]]; then
+        echo "Release $tag is a draft outside this workflow." >&2
         exit 1
     fi
-    for file in "${files[@]}" SHA256SUMS.txt; do
-        if ! grep -Fxq -- "$file" <<< "$existing"; then
-            echo "Published release $tag is missing a complete upload of $file." >&2
-            exit 1
-        fi
-    done
-    echo "Release $tag already contains the expected assets."
-    exit 0
+else
+    create_draft=true
 fi
 
 sha256sum "${files[@]}" > SHA256SUMS.txt
-release_flags=(--verify-tag --generate-notes)
-if [[ "$tag" == *-* ]]; then
-    release_flags+=(--prerelease)
+if [[ "$create_draft" == true ]]; then
+    release_flags=(--verify-tag --generate-notes --draft --notes "$marker")
+    if [[ "$tag" == *-* ]]; then
+        release_flags+=(--prerelease)
+    fi
+    gh release create "$tag" --repo "$repository" "${release_flags[@]}"
 fi
-gh release create "$tag" "${files[@]}" SHA256SUMS.txt \
-    --repo "$repository" "${release_flags[@]}"
+gh release upload "$tag" "${files[@]}" SHA256SUMS.txt --clobber --repo "$repository"
+gh release edit "$tag" --draft=false --repo "$repository"
