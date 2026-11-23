@@ -252,7 +252,7 @@ describe("browser picker", () => {
       request.mockClear();
       emitDeferred(7, 1);
       emitDeferred(7, 1);
-      expect(request).toHaveBeenCalledExactlyOnceWith("fit_picker", { contentHeight: 686, viewportHeight: window.innerHeight, id: 7, growOnly: true });
+      expect(request).toHaveBeenCalledExactlyOnceWith("fit_picker", { contentHeight: 686, id: 7, growOnly: true });
     } finally {
       scrollHeight.mockRestore();
       clientHeight.mockRestore();
@@ -268,7 +268,7 @@ describe("browser picker", () => {
       .mockReturnValue(300);
     try {
       emitQueueChange();
-      await vi.waitFor(() => expect(request).toHaveBeenCalledWith("fit_picker", { contentHeight: 621, viewportHeight: window.innerHeight, id: 7 }));
+      await vi.waitFor(() => expect(request).toHaveBeenCalledWith("fit_picker", { contentHeight: 621, id: 7 }));
     } finally {
       scrollHeight.mockRestore();
       clientHeight.mockRestore();

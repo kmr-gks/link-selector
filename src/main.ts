@@ -146,7 +146,6 @@ function fitPicker(list?: HTMLUListElement, growOnly?: true) {
     : current ? app.scrollHeight : null;
   void invoke("fit_picker", {
     contentHeight,
-    viewportHeight: window.innerHeight,
     id: current?.id,
     ...(growOnly && { growOnly }),
   }).catch(() => {

@@ -19,6 +19,19 @@ impl Dimensions {
     }
 }
 
+pub fn fit_content_height(
+    content_height: u32,
+    default_height: f64,
+    scale: f64,
+    window_height: u32,
+    webview_height: u32,
+) -> u32 {
+    let reserved = window_height.saturating_sub(webview_height);
+    let content = (f64::from(content_height) * scale).ceil() as u32;
+    let minimum = (default_height * scale).ceil() as u32;
+    content.saturating_add(reserved).max(minimum)
+}
+
 #[derive(Default)]
 pub struct PickerSize {
     pub preferred: Option<Dimensions>,
@@ -61,6 +74,14 @@ impl PickerSize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeated_fits_do_not_add_the_previous_resize_as_window_padding() {
+        let first = fit_content_height(686, 465.0, 2.0, 1390, 1326);
+        assert_eq!(first, 1436);
+        let next = fit_content_height(686, 465.0, 2.0, first, 1372);
+        assert_eq!(next, first);
+    }
 
     #[test]
     fn saves_the_latest_resize_across_restarts() {

@@ -180,7 +180,6 @@ fn open_settings() -> Result<(), String> {
 fn fit_picker(
     window: WebviewWindow,
     content_height: Option<u32>,
-    viewport_height: Option<u32>,
     id: Option<u64>,
     grow_only: Option<bool>,
 ) -> tauri::Result<()> {
@@ -226,26 +225,21 @@ fn fit_picker(
     let state = window.state::<Mutex<PickerSize>>();
     let preferred = state.lock().unwrap().preferred;
     let max_width = area.size.width.saturating_sub(frame_width);
-    let height = preferred.map_or_else(
-        || {
-            let minimum = (default_height * scale).ceil() as u32;
-            let Some(content) = content_height else {
-                return minimum;
-            };
-            // The native content area can include space outside the webview.
-            let reserved = viewport_height
-                .filter(|height| *height > 0)
-                .map_or(0, |height| {
-                    inner
-                        .height
-                        .saturating_sub((f64::from(height) * scale).round() as u32)
-                });
-            ((f64::from(content) * scale).ceil() as u32)
-                .saturating_add(reserved)
-                .max(minimum)
-        },
-        |size| (size.height * scale).ceil() as u32,
-    );
+    let height = if let Some(size) = preferred {
+        (size.height * scale).ceil() as u32
+    } else if let Some(content) = content_height {
+        // Read both native dimensions in the same fit, even when the web page
+        // still has a layout from before the last native resize.
+        picker_size::fit_content_height(
+            content,
+            default_height,
+            scale,
+            inner.height,
+            window.as_ref().size()?.height,
+        )
+    } else {
+        (default_height * scale).ceil() as u32
+    };
     let width = preferred
         .map_or(inner.width, |size| (size.width * scale).round() as u32)
         .min(max_width);
@@ -471,7 +465,7 @@ fn show_window(window: &WebviewWindow) {
             .preferred
             .is_some();
         if has_preferred_size {
-            let _ = fit_picker(window.clone(), None, None, None, None);
+            let _ = fit_picker(window.clone(), None, None, None);
         }
     }
     let _ = window.unminimize();
@@ -540,7 +534,7 @@ fn main() {
             app.manage(Mutex::new(size));
             if has_preferred_size {
                 if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
-                    let _ = fit_picker(window, None, None, None, None);
+                    let _ = fit_picker(window, None, None, None);
                 }
             }
             Ok(())
