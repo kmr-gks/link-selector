@@ -26,37 +26,37 @@ function key(name: string, options: KeyboardEventInit = {}) {
   window.dispatchEvent(new KeyboardEvent("keydown", { key: name, ...options }));
 }
 
-beforeAll(async () => {
-  document.body.innerHTML = '<main id="app"></main>';
-  vi.mocked(listen).mockImplementation(async (event, handler) => {
-    if (event === "main-picker-changed") {
-      emitQueueChange = () => handler({ event, id: 1, payload: undefined });
-    } else if (event === "picker-deferred") {
-      emitDeferred = (id, count) => handler({ event, id: 2, payload: [id, count] as never });
-    }
-    return () => {};
-  });
-  await import("../src/main");
-});
-
-beforeEach(async () => {
-  picker = { ...link };
-  failedLaunch = false;
-  request.mockReset();
-  request.mockImplementation(async (command) => {
-    if (command === "picker_state") return picker as never;
-    if (command === "open_browser" && failedLaunch) throw "ブラウザを開けませんでした。";
-    if (command === "cancel_link") {
-      picker = null;
-      emitQueueChange();
-    }
-    return undefined as never;
-  });
-  emitQueueChange();
-  await vi.waitFor(() => expect(document.querySelector("h1")?.textContent).toBe("ブラウザを選択"));
-});
-
 describe("browser picker", () => {
+  beforeAll(async () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    vi.mocked(listen).mockImplementation(async (event, handler) => {
+      if (event === "main-picker-changed") {
+        emitQueueChange = () => handler({ event, id: 1, payload: undefined });
+      } else if (event === "picker-deferred") {
+        emitDeferred = (id, count) => handler({ event, id: 2, payload: [id, count] as never });
+      }
+      return () => {};
+    });
+    await import("../src/main");
+  });
+
+  beforeEach(async () => {
+    picker = { ...link };
+    failedLaunch = false;
+    request.mockReset();
+    request.mockImplementation(async (command) => {
+      if (command === "picker_state") return picker as never;
+      if (command === "open_browser" && failedLaunch) throw "ブラウザを開けませんでした。";
+      if (command === "cancel_link") {
+        picker = null;
+        emitQueueChange();
+      }
+      return undefined as never;
+    });
+    emitQueueChange();
+    await vi.waitFor(() => expect(document.querySelector("h1")?.textContent).toBe("ブラウザを選択"));
+  });
+
   it("announces recovered links and displays the next link in the main window", async () => {
     emitDeferred(7, 2);
     expect(document.querySelector(".waiting")?.textContent).toContain("2 件");
@@ -280,5 +280,71 @@ describe("browser picker", () => {
     await vi.waitFor(() => expect(document.querySelectorAll(".browser")).toHaveLength(0));
     document.querySelector<HTMLButtonElement>(".actions button")!.click();
     await vi.waitFor(() => expect(request).toHaveBeenCalledWith("copy_link", { id: 7 }));
+  });
+});
+
+describe("main picker initialization", () => {
+  const queueChanged = "main-picker-changed";
+  const pickerDeferred = "picker-deferred";
+  const subscribe = vi.mocked(listen);
+  const subscriptions = new Map<string, (payload: unknown) => void>();
+  let failEvent: string;
+  let failuresRemaining: number;
+
+  beforeEach(() => {
+    vi.resetModules();
+    document.body.innerHTML = '<main id="app"></main>';
+    subscriptions.clear();
+    subscribe.mockReset();
+    subscribe.mockImplementation(async (event, handler) => {
+      if (event === failEvent && failuresRemaining > 0) {
+        failuresRemaining--;
+        throw new Error("event subscription unavailable");
+      }
+      subscriptions.set(event, (payload) => handler({ event, id: 1, payload: payload as never }));
+      return () => {};
+    });
+    request.mockReset();
+    request.mockImplementation(async (command) => {
+      if (command === "picker_state") return { ...link, browsers: [], waiting: 2 } as never;
+      return undefined as never;
+    });
+  });
+
+  it.each([queueChanged, pickerDeferred])("retries a transient failure in %s", async (event) => {
+    failEvent = event;
+    failuresRemaining = 1;
+    await import("../src/main");
+    await vi.waitFor(() => expect(document.querySelector(".link-url")?.textContent).toBe(link.url));
+
+    expect(subscribe.mock.calls.filter(([name]) => name === event)).toHaveLength(2);
+    expect(subscribe.mock.calls.filter(([name]) => name !== event)).toHaveLength(1);
+    expect(request).toHaveBeenCalledWith("picker_state");
+  });
+
+  it("recovers manually after a persistent failure while retaining the working subscription", async () => {
+    failEvent = pickerDeferred;
+    failuresRemaining = Infinity;
+    await import("../src/main");
+    await vi.waitFor(() => {
+      expect(document.querySelector('[role="alert"]')?.textContent).toBe("選択画面を初期化できませんでした。");
+    });
+    subscriptions.get(queueChanged)!(undefined);
+    expect(request).not.toHaveBeenCalledWith("picker_state");
+
+    failuresRemaining = 0;
+    const retry = document.querySelector<HTMLButtonElement>("button.primary")!;
+    expect(retry.textContent).toBe("再読み込み");
+    retry.click();
+    retry.click();
+    await vi.waitFor(() => expect(document.querySelector(".link-url")?.textContent).toBe(link.url));
+    expect(subscribe.mock.calls.filter(([name]) => name === queueChanged)).toHaveLength(1);
+    expect(subscribe.mock.calls.filter(([name]) => name === pickerDeferred)).toHaveLength(3);
+    expect(document.querySelector(".waiting")?.textContent).toContain("2 件");
+    subscriptions.get(pickerDeferred)!([link.id, 3]);
+    expect(document.querySelector(".waiting")?.textContent).toContain("3 件");
+    request.mockClear();
+    subscriptions.get(queueChanged)!(undefined);
+    expect(request).toHaveBeenCalledExactlyOnceWith("picker_state");
   });
 });

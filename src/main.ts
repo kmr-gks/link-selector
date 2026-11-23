@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { listen, type EventCallback } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import "./style.css";
 
@@ -23,6 +23,7 @@ let requestNumber = 0;
 let busy = false;
 let cancellingLinkId: number | undefined;
 let deferredDuringRefresh: Map<number, number> | undefined;
+let listenersReady = false;
 
 function element<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -40,6 +41,17 @@ function button(label: string, className: string, action: () => void) {
   node.type = "button";
   node.addEventListener("click", action);
   return node;
+}
+
+function showLoadError(message: string, retry: () => Promise<void>) {
+  app.classList.remove("picker");
+  const error = element("p", "instructions", message);
+  error.setAttribute("role", "alert");
+  const reload = button("再読み込み", "primary", () => {
+    reload.disabled = true;
+    void retry();
+  });
+  app.replaceChildren(error, reload);
 }
 
 async function refresh() {
@@ -63,10 +75,7 @@ async function refresh() {
     if (request !== requestNumber) return;
     current = null;
     busy = false;
-    app.classList.remove("picker");
-    const error = element("p", "instructions", "選択画面を読み込めませんでした。");
-    error.setAttribute("role", "alert");
-    app.replaceChildren(error, button("再読み込み", "primary", () => void refresh()));
+    showLoadError("選択画面を読み込めませんでした。", refresh);
   } finally {
     if (deferredDuringRefresh === notifications) deferredDuringRefresh = undefined;
   }
@@ -236,26 +245,45 @@ window.addEventListener("keydown", (event) => {
   }
 });
 
+function subscribeOnce<T>(event: string, handler: EventCallback<T>) {
+  let subscribed = false;
+  return async () => {
+    if (subscribed) return;
+    await listen(event, handler).catch(() => listen(event, handler));
+    subscribed = true;
+  };
+}
+
+const subscribeToPickerChanges = subscribeOnce("main-picker-changed", () => {
+  if (listenersReady) void refresh();
+});
+const subscribeToDeferred = subscribeOnce<[number, number]>("picker-deferred", ({ payload }) => {
+  const [id, count] = payload;
+  if (deferredDuringRefresh) {
+    deferredDuringRefresh.set(id, Math.max(count, deferredDuringRefresh.get(id) ?? 0));
+  }
+  if (current?.id !== id) return;
+  current.waiting = Math.max(current.waiting, count);
+  const waiting = app.querySelector(".waiting");
+  if (waiting) waiting.textContent = waitingMessage(current.waiting);
+});
+
+async function initializePicker() {
+  const subscriptions = await Promise.allSettled([subscribeToPickerChanges(), subscribeToDeferred()]);
+  if (subscriptions.some((subscription) => subscription.status === "rejected")) {
+    showLoadError("選択画面を初期化できませんでした。", initializePicker);
+    return;
+  }
+  listenersReady = true;
+  await refresh();
+}
+
 if (isMainWindow) {
   render();
+  void initializePicker();
 } else {
   const status = element("p", "status");
   status.setAttribute("role", "status");
   app.append(status);
+  void refresh();
 }
-const ready = isMainWindow
-  ? Promise.all([
-    listen("main-picker-changed", () => void refresh()),
-    listen<[number, number]>("picker-deferred", ({ payload }) => {
-      const [id, count] = payload;
-      if (deferredDuringRefresh) {
-        deferredDuringRefresh.set(id, Math.max(count, deferredDuringRefresh.get(id) ?? 0));
-      }
-      if (current?.id !== id) return;
-      current.waiting = Math.max(current.waiting, count);
-      const waiting = app.querySelector(".waiting");
-      if (waiting) waiting.textContent = waitingMessage(current.waiting);
-    }),
-  ])
-  : Promise.resolve();
-void ready.then(refresh).catch(() => setStatus("選択画面を初期化できませんでした。"));
