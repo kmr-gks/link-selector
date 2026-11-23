@@ -4,7 +4,11 @@ set -euo pipefail
 tag=${1:?Provide a version tag}
 repository=${2:?Provide the GitHub repository}
 version=${tag#v}
-files=("Link-Selector-macOS-$version-universal.dmg" "Link-Selector-Windows-$version-x64-setup.exe")
+files=(
+    "Link-Selector-macOS-$version-universal.dmg"
+    "Link-Selector-Windows-$version-x64-setup.exe"
+    "Link-Selector-Windows-$version-arm64-setup.exe"
+)
 
 create_draft=false
 marker='<!-- link-selector:managed-release -->'

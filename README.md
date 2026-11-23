@@ -1,11 +1,11 @@
 # Link Selector
 
-メールやチャットなどからWebリンクを開くたびに、そのリンクを開くブラウザを選べるデスクトップアプリです。macOS 13以降（Apple Silicon・Intel）とWindows 11（x64）向けにビルドできます。
+メールやチャットなどからWebリンクを開くたびに、そのリンクを開くブラウザを選べるデスクトップアプリです。macOS 13以降（Apple Silicon・Intel）とWindows 11（x64・Arm64）向けにビルドできます。
 
 ## 使い方
 
 - **macOS**。DMGに入っている `Link Selector.app` を「アプリケーション」にコピーして起動します。「システム設定」→「デスクトップとDock」→「デフォルトのWebブラウザ」で **Link Selector** を選びます。
-- **Windows 11**。`Link-Selector-Windows-<バージョン>-x64-setup.exe` を実行します。「設定」→「アプリ」→「既定のアプリ」→「Link Selector」で、`HTTP` と `HTTPS` の両方に Link Selector を選びます。
+- **Windows 11**。「設定」→「システム」→「バージョン情報」のシステムの種類を確認し、x64なら `Link-Selector-Windows-<バージョン>-x64-setup.exe`、Arm64なら `Link-Selector-Windows-<バージョン>-arm64-setup.exe` を実行します。「設定」→「アプリ」→「既定のアプリ」→「Link Selector」で、`HTTP` と `HTTPS` の両方に Link Selector を選びます。
 
 外部アプリのリンクを開くと選択画面が出ます。ブラウザ名をクリックするか、上から9件まで数字キーで選べます。`Esc` は表示中のリンクをキャンセルします。複数のリンクを開くと、リンクごとに選択ウィンドウが開きます。各ウィンドウで独立してブラウザを選択したり、キャンセルしたりできます。起動依頼の準備中に画面を閉じると、そのリンクを取り消します。OSへの引き渡し中に閉じると、その画面は引き渡しが返り次第閉じます。他の選択画面は引き続き操作でき、引き渡し済みの起動処理は画面を閉じた後も続く場合があります。URLや選択履歴は保存しません。
 
@@ -38,11 +38,11 @@ cargo test --manifest-path src-tauri/Cargo.toml --locked
 ```
 
 - **macOS**。`npm run tauri build -- --bundles app` で、`src-tauri/target/release/bundle/macos/` にアプリを生成します。既定ブラウザを変更せず試すには、`open -a "src-tauri/target/release/bundle/macos/Link Selector.app" https://example.com/` を実行します。
-- **Windows**。`npm run tauri build -- --bundles nsis` で、`src-tauri/target/release/bundle/nsis/` にインストーラーを生成します。
+- **Windows**。`npm run tauri build -- --bundles nsis` で、使用中のRustツールチェーン向けのインストーラーを生成します。Arm64を明示する場合はVisual StudioのArm64 C++ビルドツールと `rustup target add aarch64-pc-windows-msvc` でターゲットを用意し、`npm run tauri build -- --target aarch64-pc-windows-msvc --bundles nsis` を実行します。成果物は `src-tauri/target/aarch64-pc-windows-msvc/release/bundle/nsis/` に生成されます。
 
 ## CIとリリース
 
-[GitHub Actions](https://github.com/kmr-gks/link-selector/actions/workflows/build.yml) は、`main` へのpushとプルリクエストで、両OSのテスト、インストーラーのビルド、配布物の検証を実行します。各実行の成果物からDMGとWindowsインストーラーを取得できます。
+[GitHub Actions](https://github.com/kmr-gks/link-selector/actions/workflows/build.yml) は、`main` へのpushとプルリクエストで、両OSのテスト、インストーラーのビルド、配布物の検証を実行します。各実行の成果物からmacOS用DMGとWindows用のx64・Arm64インストーラーを取得できます。Windows CIでは各OSアーキテクチャのランナーで、インストールされた実行ファイルのアーキテクチャ、選択画面の起動、既定アプリ登録とアンインストールを確認します。
 
 `v0.2.0` のようにアプリのバージョンと一致するタグをpushすると、両OSの検証を通過した後に [GitHub Releases](https://github.com/kmr-gks/link-selector/releases) へインストーラーとSHA-256チェックサムを公開します。インストーラー名にはアプリ名、OS名、バージョン、アーキテクチャが含まれます。macOS版は、署名・公証の設定があるタグではDeveloper IDで署名し、Appleの公証チケットを添付して公開します。設定がない場合はアドホック署名のDMGを公開します。Windows版は開発者証明書による署名前のビルドです。
 

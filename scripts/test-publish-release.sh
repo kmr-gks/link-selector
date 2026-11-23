@@ -7,8 +7,10 @@ trap 'rm -rf -- "$scratch"' EXIT
 cd "$scratch"
 export macos=Link-Selector-macOS-1.2.3-universal.dmg
 export windows=Link-Selector-Windows-1.2.3-x64-setup.exe
+export arm64=Link-Selector-Windows-1.2.3-arm64-setup.exe
 printf 'macOS' > "$macos"
-printf 'Windows' > "$windows"
+printf 'Windows x64' > "$windows"
+printf 'Windows Arm64' > "$arm64"
 
 gh() {
     if [[ $1 == release && $2 == view ]]; then
@@ -22,15 +24,16 @@ gh() {
         fi
         case "$state" in
             missing) return 1 ;;
-            published|incomplete|draft|managed|starter|empty)
-                json=$(jq -n --arg mac "$macos" --arg win "$windows" --arg state "$state" '
+            published|incomplete|missing-arm64|draft|managed|starter|empty)
+                json=$(jq -n --arg mac "$macos" --arg win "$windows" --arg arm "$arm64" --arg state "$state" '
                     {isDraft: ($state == "draft" or $state == "managed"),
                      body: (if $state == "managed" then "<!-- link-selector:managed-release -->\n\nGenerated notes" else "" end),
                      assets: ([
                         {name: $mac, state: (if $state == "starter" then "starter" else "uploaded" end),
                          size: (if $state == "starter" or $state == "empty" then 0 else 10 end)},
                         {name: "SHA256SUMS.txt", state: "uploaded", size: 10}
-                    ] + (if $state == "incomplete" then [] else [{name: $win, state: "uploaded", size: 10}] end))}') || return 2
+                    ] + (if $state == "incomplete" then [] else [{name: $win, state: "uploaded", size: 10}] end)
+                       + (if $state == "missing-arm64" then [] else [{name: $arm, state: "uploaded", size: 10}] end))}') || return 2
                 jq -r "${!#}" <<< "$json" | awk '{ sub(/\r$/, ""); printf "%s\r\n", $0 }' ;;
             *) return 2 ;;
         esac
@@ -75,7 +78,7 @@ if RELEASE_STATE=draft bash "$publish" v1.2.3 owner/repo; then
     echo 'A draft release was incorrectly accepted.' >&2
     exit 1
 fi
-for broken in starter empty; do
+for broken in missing-arm64 starter empty; do
     if RELEASE_STATE=$broken bash "$publish" v1.2.3 owner/repo; then
         echo "A release with a $broken upload was incorrectly accepted." >&2
         exit 1
@@ -94,6 +97,7 @@ RELEASE_STATE=interrupted bash "$publish" v1.2.3 owner/repo
 [[ $(cat create.log) == "$create_attempt" && -e edit.log ]]
 grep -Fxq -- "$macos" upload.log
 grep -Fxq -- "$windows" upload.log
+grep -Fxq -- "$arm64" upload.log
 grep -Fxq -- SHA256SUMS.txt upload.log
 sha256sum -c SHA256SUMS.txt
 rm upload.log edit.log create.log SHA256SUMS.txt
