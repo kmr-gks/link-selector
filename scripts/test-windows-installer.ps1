@@ -42,27 +42,35 @@ function Confirm-PickerUrls {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = [Security.Principal.WindowsPrincipal]::new($identity)
     $elevated = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-    $policy = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments'
+    $policy = 'SOFTWARE\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments'
     $name = [System.IO.Path]::GetFileName($app)
     # WebView2 ignores environment overrides for elevated hosts starting with Runtime 150.
     # https://github.com/MicrosoftEdge/WebView2Feedback/issues/5645
+    $policyKey = $null
     $policySet = $false
     try {
         if ($elevated) {
-            if (!(Test-Path $policy)) { New-Item -Path $policy -Force | Out-Null }
-            $previous = Get-ItemPropertyValue -Path $policy -Name $name -ErrorAction SilentlyContinue
-            New-ItemProperty -Path $policy -Name $name -PropertyType String -Force `
-                -Value "--remote-debugging-address=127.0.0.1 --remote-debugging-port=$port" | Out-Null
+            $policyKey = [Microsoft.Win32.Registry]::LocalMachine.CreateSubKey($policy)
+            $previous = $policyKey.GetValue($name)
+            if ($null -ne $previous) { $previousKind = $policyKey.GetValueKind($name) }
+            $policyKey.SetValue($name, "--remote-debugging-address=127.0.0.1 --remote-debugging-port=$port",
+                [Microsoft.Win32.RegistryValueKind]::String)
             $policySet = $true
         }
         node (Join-Path $PSScriptRoot "check-windows-picker.mjs") $app $port
         if ($LASTEXITCODE -ne 0) { throw 'The installed app did not render both picker URLs' }
     } finally {
-        if ($policySet) {
-            if ($null -eq $previous) {
-                Remove-ItemProperty -Path $policy -Name $name
-            } else {
-                Set-ItemProperty -Path $policy -Name $name -Value $previous
+        if ($policyKey) {
+            try {
+                if ($policySet) {
+                    if ($null -eq $previous) {
+                        $policyKey.DeleteValue($name)
+                    } else {
+                        $policyKey.SetValue($name, $previous, $previousKind)
+                    }
+                }
+            } finally {
+                $policyKey.Dispose()
             }
         }
     }
