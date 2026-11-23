@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
@@ -123,6 +123,33 @@ describe("browser picker", () => {
     await vi.waitFor(() => expect(document.querySelector(".link-url")).toBeNull());
     expect(request).toHaveBeenCalledWith("cancel_link", { id: 7, browserId: undefined });
     completeLaunch();
+  });
+
+  it("keeps launch progress and disables browser choices while copying the link", async () => {
+    let failLaunch!: (error: string) => void;
+    const launch = new Promise<void>((_, reject) => { failLaunch = reject; });
+    request.mockImplementation(async (command) => {
+      if (command === "open_browser") return launch as never;
+      return undefined as never;
+    });
+
+    const choices = Array.from(document.querySelectorAll<HTMLButtonElement>(".browser"));
+    choices[0].click();
+    expect(choices.every((choice) => choice.disabled)).toBe(true);
+    choices[1].click();
+    key("2");
+    expect(request.mock.calls.filter(([command]) => command === "open_browser")).toHaveLength(1);
+
+    const copy = document.querySelector<HTMLButtonElement>(".actions button")!;
+    expect(copy.disabled).toBe(false);
+    copy.click();
+    await vi.waitFor(() => expect(document.querySelector(".status")?.textContent).toContain("リンクをコピーしました。"));
+    expect(document.querySelector(".status")?.textContent).toContain("ブラウザを起動しています。");
+    expect(choices.every((choice) => choice.disabled)).toBe(true);
+
+    failLaunch("ブラウザを開けませんでした。");
+    await vi.waitFor(() => expect(document.querySelector(".status")?.textContent).toBe("ブラウザを開けませんでした。"));
+    expect(choices.every((choice) => !choice.disabled)).toBe(true);
   });
 
   it("blocks browser choices and repeated cancellation until the cancelled picker is replaced", async () => {
@@ -328,6 +355,7 @@ describe("main picker initialization", () => {
   let failuresRemaining: number;
 
   beforeEach(() => {
+    vi.useFakeTimers();
     vi.resetModules();
     document.body.innerHTML = '<main id="app"></main>';
     subscriptions.clear();
@@ -345,6 +373,11 @@ describe("main picker initialization", () => {
       if (command === "picker_state") return { ...link, browsers: [], waiting: 2 } as never;
       return undefined as never;
     });
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
   });
 
   it.each([queueChanged, pickerDeferred])("retries a transient failure in %s", async (event) => {
@@ -367,6 +400,29 @@ describe("main picker initialization", () => {
     request.mockResolvedValueOnce({ ...link, id: 8, url: "https://example.com/next" } as never);
     subscriptions.get(queueChanged)!(undefined);
     await vi.waitFor(() => expect(document.querySelector(".link-url")?.textContent).toBe("https://example.com/next"));
+  });
+
+  it("recovers the deferred notification subscription without changing the current link", async () => {
+    failEvent = pickerDeferred;
+    failuresRemaining = 2;
+    request.mockImplementation(async (command) => {
+      if (command === "picker_state") return { ...link } as never;
+      if (command === "picker_waiting") return [link.id, 1] as never;
+      return undefined as never;
+    });
+
+    await import("../src/main");
+    await vi.waitFor(() => expect(document.querySelector(".link-url")?.textContent).toBe(link.url));
+    expect(subscribe.mock.calls.filter(([name]) => name === pickerDeferred)).toHaveLength(2);
+    expect(request).not.toHaveBeenCalledWith("picker_waiting");
+    await vi.advanceTimersByTimeAsync(250);
+
+    expect(document.querySelector(".waiting")?.textContent).toContain("1 件");
+    subscriptions.get(pickerDeferred)!([link.id, 2]);
+    expect(document.querySelector(".waiting")?.textContent).toContain("2 件");
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(subscribe.mock.calls.filter(([name]) => name === pickerDeferred)).toHaveLength(3);
+    expect(request.mock.calls.filter(([command]) => command === "picker_state")).toEqual([["picker_state"]]);
   });
 
   it("reconciles links queued before the deferred listener registers", async () => {

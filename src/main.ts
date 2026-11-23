@@ -20,7 +20,8 @@ const app = document.querySelector<HTMLElement>("#app")!;
 const isMainWindow = getCurrentWindow().label === "main";
 let current: Picker | null = null;
 let requestNumber = 0;
-let busy = false;
+let launchingLinkId: number | undefined;
+let statusMessage = "";
 let cancellingLinkId: number | undefined;
 let deferredDuringRefresh: Map<number, number> | undefined;
 let listenersReady = false;
@@ -68,35 +69,51 @@ async function refresh() {
       view.waiting = Math.max(view.waiting, notifications.get(view.id) ?? 0);
     }
     if (view?.id !== cancellingLinkId) cancellingLinkId = undefined;
+    if (view?.id !== current?.id) statusMessage = "";
     current = view;
-    busy = false;
     render();
   } catch {
     if (request !== requestNumber) return;
     current = null;
-    busy = false;
+    statusMessage = "";
     showLoadError("選択画面を読み込めませんでした。", refresh);
   } finally {
     if (deferredDuringRefresh === notifications) deferredDuringRefresh = undefined;
   }
 }
 
+function browserChoicesDisabled(id: number) {
+  return id === launchingLinkId || id === cancellingLinkId;
+}
+
+function updateBrowserChoices(id: number) {
+  const disabled = browserChoicesDisabled(id);
+  app.querySelectorAll<HTMLButtonElement>(".browser").forEach((button) => {
+    button.disabled = disabled;
+  });
+}
+
 async function processLink(command: "open_browser" | "cancel_link", browser?: Browser) {
-  if (!current || current.id === cancellingLinkId || (busy && command === "open_browser")) return;
+  if (!current || current.id === cancellingLinkId || (current.id === launchingLinkId && command === "open_browser")) return;
   const { id } = current;
   if (command === "open_browser") {
-    busy = true;
-    setStatus("ブラウザを起動しています。画面を閉じた後も起動が続く場合があります。");
+    launchingLinkId = id;
+    setStatus("");
   } else {
     cancellingLinkId = id;
   }
+  updateBrowserChoices(id);
   try {
     await invoke(command, { id, browserId: browser?.id });
   } catch (error) {
     if (command === "cancel_link" && cancellingLinkId === id) cancellingLinkId = undefined;
-    if (current?.id === id) setStatus(String(error));
+    if (current?.id === id) statusMessage = String(error);
   } finally {
-    if (command === "open_browser" && current?.id === id) busy = false;
+    if (command === "open_browser" && launchingLinkId === id) launchingLinkId = undefined;
+    if (current?.id === id) {
+      updateBrowserChoices(id);
+      updatePickerMessage(".status", statusText());
+    }
   }
 }
 
@@ -109,8 +126,15 @@ async function copyLink(id: number) {
   }
 }
 
+function statusText() {
+  if (!current || current.id !== launchingLinkId) return statusMessage;
+  const progress = "ブラウザを起動しています。画面を閉じた後も起動が続く場合があります。";
+  return statusMessage ? `${progress} ${statusMessage}` : progress;
+}
+
 function setStatus(message: string) {
-  updatePickerMessage(".status", message);
+  statusMessage = message;
+  updatePickerMessage(".status", statusText());
 }
 
 function updatePickerMessage(selector: string, message: string) {
@@ -186,12 +210,14 @@ function render() {
   }
 
   const { id, url, browsers } = current;
+  status.textContent = statusText();
   const list = element("ul", "browsers");
   list.setAttribute("aria-label", "インストール済みブラウザ");
   const icons = new Map<string, HTMLElement>();
   for (const [index, browser] of browsers.entries()) {
     const row = element("li", "");
     const choice = button("", "browser", () => void processLink("open_browser", browser));
+    choice.disabled = browserChoicesDisabled(id);
     const icon = element("span", "browser-icon", "↗");
     icon.setAttribute("aria-hidden", "true");
     icons.set(browser.id, icon);
@@ -270,10 +296,7 @@ function subscribeOnce<T>(event: string, handler: EventCallback<T>, onSubscribed
 }
 
 const subscribeToPickerChanges = subscribeOnce("main-picker-changed", () => {
-  if (listenersReady) {
-    void subscribeToDeferred().catch(() => {});
-    void refresh();
-  }
+  if (listenersReady) void refresh();
 });
 type Waiting = [id: number, count: number];
 
@@ -297,8 +320,13 @@ const subscribeToDeferred = subscribeOnce<Waiting>("picker-deferred", ({ payload
   }
 });
 
+function recoverDeferredSubscription(delay = 250) {
+  void subscribeToDeferred().catch(() => {
+    window.setTimeout(() => recoverDeferredSubscription(Math.min(delay * 2, 4000)), delay);
+  });
+}
+
 async function initializePicker() {
-  void subscribeToDeferred().catch(() => {});
   try {
     await subscribeToPickerChanges();
   } catch {
@@ -311,6 +339,7 @@ async function initializePicker() {
 
 if (isMainWindow) {
   render();
+  recoverDeferredSubscription();
   void initializePicker();
 } else {
   const status = element("p", "status");
