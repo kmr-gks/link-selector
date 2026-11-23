@@ -6,7 +6,6 @@ $msix = Join-Path $env:RUNNER_TEMP 'firefox-protocol-test.msix'
 $source = 'https://archive.mozilla.org/pub/firefox/releases/149.0/win64/multi/Firefox%20Setup%20149.0.msix'
 $checksum = '26AE4A6F0E963B3DE9F73C8F61E0B4D843A23565C1B3AF65715404EE0721B5D4'
 
-$before = @(Get-AppxPackage '*Firefox*' | Select-Object -ExpandProperty PackageFullName)
 $package = $null
 $canRemovePackage = $true
 try {
@@ -14,8 +13,26 @@ try {
     if ((Get-FileHash $msix -Algorithm SHA256).Hash -ne $checksum) {
         throw 'The Firefox MSIX checksum does not match'
     }
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = [System.IO.Compression.ZipFile]::OpenRead($msix)
+    try {
+        $manifest = [xml]::new()
+        $stream = $archive.GetEntry('AppxManifest.xml').Open()
+        try { $manifest.Load($stream) } finally { $stream.Dispose() }
+    } finally {
+        $archive.Dispose()
+    }
+    $identity = $manifest.Package.Identity
+    if (-not $identity.Name -or -not $identity.Publisher) {
+        throw 'The Firefox MSIX manifest is missing its package identity'
+    }
+    $existing = @(Get-AppxPackage -Name $identity.Name | Where-Object { $_.Publisher -eq $identity.Publisher })
+    if ($existing.Count -gt 0) {
+        throw 'The Firefox MSIX test requires an environment without this Firefox package family installed.'
+    }
+
     Add-AppxPackage -Path $msix
-    $installed = @(Get-AppxPackage '*Firefox*' | Where-Object { $_.PackageFullName -notin $before })
+    $installed = @(Get-AppxPackage -Name $identity.Name | Where-Object { $_.Publisher -eq $identity.Publisher })
     if ($installed.Count -ne 1) { throw 'Expected one newly registered Firefox package' }
     $package = $installed[0]
     $env:LINK_SELECTOR_TEST_MSIX = $package.PackageFamilyName

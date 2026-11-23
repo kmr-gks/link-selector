@@ -3,7 +3,7 @@ $ErrorActionPreference = 'Stop'
 
 function Invoke-WebRequest {
     param([switch]$UseBasicParsing, $Uri, $OutFile, $TimeoutSec)
-    Set-Content -LiteralPath $OutFile -Value 'mock Firefox MSIX'
+    Copy-Item -LiteralPath $fixtureMsix -Destination $OutFile
 }
 
 function Get-FileHash {
@@ -13,9 +13,12 @@ function Get-FileHash {
 
 function Get-AppxPackage {
     param($Name)
-    if ($fixtureState.Installed) {
+    if ($Name -ne 'Firefox') { throw "Unexpected package query: $Name" }
+    if ($fixtureState.Installed -or $fixtureState.Existing) {
+        $version = if ($fixtureState.Installed) { '149.0.0.0' } else { '148.0.0.0' }
         [pscustomobject]@{
-            PackageFullName = 'Firefox_149.0.0.0_x64__test'
+            Publisher = 'CN=Test Publisher'
+            PackageFullName = "Firefox_${version}_x64__test"
             PackageFamilyName = 'Firefox_test'
             InstallLocation = $env:RUNNER_TEMP
         }
@@ -44,6 +47,11 @@ $scratch = Join-Path $previousTemp ('msix-cleanup-' + [Guid]::NewGuid())
 New-Item -ItemType Directory -Path $scratch | Out-Null
 try {
     $env:RUNNER_TEMP = $scratch
+    $manifestFile = Join-Path $scratch 'AppxManifest.xml'
+    '<Package><Identity Name="Firefox" Publisher="CN=Test Publisher" Version="149.0.0.0" /></Package>' |
+        Set-Content -LiteralPath $manifestFile
+    $fixtureMsix = Join-Path $scratch 'fixture.zip'
+    Compress-Archive -LiteralPath $manifestFile -DestinationPath $fixtureMsix
     $smoke = Join-Path $scratch 'test-windows-msix.ps1'
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'test-windows-msix.ps1') -Destination $smoke
     @'
@@ -74,6 +82,23 @@ function Invoke-WindowsTestProcess {
         if (Test-Path -LiteralPath (Join-Path $scratch 'firefox-protocol-test.msix')) {
             throw "The smoke script left the downloaded MSIX behind after [$failure]"
         }
+    }
+
+    $fixtureState = @{ Existing = $true; Installed = $false; ProcessChecks = 0; Removed = $null }
+    $failure = $null
+    try {
+        & $smoke
+    } catch {
+        $failure = $_.Exception
+    }
+    if ($null -eq $failure -or $failure.Message -notlike '*without this Firefox package family*') {
+        throw "Expected to reject an existing Firefox family before installing, received [$failure]"
+    }
+    if ($fixtureState.Installed -or $fixtureState.ProcessChecks -or $null -ne $fixtureState.Removed) {
+        throw 'The smoke script modified the existing Firefox installation'
+    }
+    if (Test-Path -LiteralPath (Join-Path $scratch 'firefox-protocol-test.msix')) {
+        throw 'The smoke script left the downloaded MSIX behind after rejecting the existing Firefox'
     }
 } finally {
     $env:RUNNER_TEMP = $previousTemp
