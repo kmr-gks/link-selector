@@ -597,6 +597,9 @@ fn main() {
                 new_inner_size,
                 ..
             } => {
+                let is_normal = !window.is_maximized().unwrap_or(true)
+                    && !window.is_fullscreen().unwrap_or(true)
+                    && !window.is_minimized().unwrap_or(true);
                 window
                     .state::<Mutex<PendingLinks>>()
                     .lock()
@@ -604,6 +607,7 @@ fn main() {
                     .record_scale_change(
                         window.label(),
                         dimensions(*new_inner_size, *scale_factor),
+                        is_normal,
                     );
             }
             WindowEvent::CloseRequested { api, .. } => {

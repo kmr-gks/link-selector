@@ -123,10 +123,17 @@ impl PendingLinks {
         }
     }
 
-    pub fn record_scale_change(&mut self, window: &str, size: Dimensions) {
+    pub fn record_scale_change(&mut self, window: &str, size: Dimensions, is_normal: bool) {
         if let Some(link) = self.by_window.get_mut(window).filter(|_| size.is_valid()) {
             match &mut link.resize {
-                ResizeTracking::Loading(last) | ResizeTracking::Presented(last) => *last = size,
+                ResizeTracking::Loading(last) | ResizeTracking::Presented(last) => {
+                    if is_normal {
+                        *last = size;
+                    } else {
+                        // The next normal resize is the restored frame, not a user resize.
+                        link.resize = ResizeTracking::AwaitingNormalSize;
+                    }
+                }
                 _ => {}
             }
         }
@@ -587,6 +594,28 @@ mod tests {
     }
 
     #[test]
+    fn resuming_normal_size_after_a_maximized_scale_change_does_not_create_a_preference() {
+        let mut links = PendingLinks::default();
+        let normal = Dimensions {
+            width: 460.0,
+            height: 695.0,
+        };
+        let maximized = Dimensions {
+            width: 1280.0,
+            height: 840.0,
+        };
+        let restored = Dimensions {
+            width: 455.0,
+            height: 690.0,
+        };
+        links.add([url("https://example.com/first")]);
+        links.set_presented(MAIN_WINDOW, 1, normal);
+        links.record_scale_change(MAIN_WINDOW, maximized, false);
+        assert!(!links.record_resize(MAIN_WINDOW, restored));
+        assert!(links.record_resize(MAIN_WINDOW, normal));
+    }
+
+    #[test]
     fn a_monitor_size_change_while_loading_does_not_replace_the_preference() {
         let mut links = PendingLinks::default();
         let start = Dimensions {
@@ -599,7 +628,7 @@ mod tests {
         };
         links.add([url("https://example.com/first")]);
         links.track_loading_size(MAIN_WINDOW, 1, start);
-        links.record_scale_change(MAIN_WINDOW, display_size);
+        links.record_scale_change(MAIN_WINDOW, display_size, true);
         assert!(!links.record_resize(MAIN_WINDOW, display_size));
         assert!(links.can_fit(MAIN_WINDOW, Some(1), false));
     }
