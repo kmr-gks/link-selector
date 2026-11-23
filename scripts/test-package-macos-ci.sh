@@ -43,7 +43,8 @@ run() {
     bash "$scratch/package-macos-ci.sh" 'test app' test.dmg
 }
 
-GITHUB_REF_TYPE=tag run
+warning=$(GITHUB_REF_TYPE=tag run)
+[[ "$warning" == "::warning::Developer ID credentials are absent. The macOS DMG is ad-hoc signed and unnotarized." ]]
 [[ $(cat "$TEST_SIGNING_LOG") == --adhoc ]]
 rm "$TEST_SIGNING_LOG"
 
