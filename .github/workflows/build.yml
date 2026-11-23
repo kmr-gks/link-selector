@@ -50,6 +50,13 @@ jobs:
         shell: bash
         run: bash scripts/test-publish-release.sh
 
+      - name: Test macOS packaging and signing setup
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          bash scripts/test-package-macos.sh
+          bash scripts/test-package-macos-ci.sh
+
       - run: cargo +stable fmt --manifest-path src-tauri/Cargo.toml --check
       - run: cargo +stable test --manifest-path src-tauri/Cargo.toml --locked
       - name: Test Windows subprocess timeout
@@ -78,8 +85,14 @@ jobs:
         if: runner.os == 'macOS'
         env:
           APP_VERSION: ${{ steps.version.outputs.version }}
+          MACOS_REQUIRE_NOTARIZATION: ${{ github.ref_type == 'tag' && vars.MACOS_REQUIRE_NOTARIZATION || '' }}
+          APPLE_CERTIFICATE: ${{ github.ref_type == 'tag' && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ github.ref_type == 'tag' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_API_KEY: ${{ github.ref_type == 'tag' && secrets.APPLE_API_KEY || '' }}
+          APPLE_API_ISSUER: ${{ github.ref_type == 'tag' && secrets.APPLE_API_ISSUER || '' }}
+          APPLE_API_KEY_BASE64: ${{ github.ref_type == 'tag' && secrets.APPLE_API_KEY_BASE64 || '' }}
         run: |
-          bash scripts/package-macos.sh \
+          bash scripts/package-macos-ci.sh \
             'src-tauri/target/universal-apple-darwin/release/bundle/macos/Link Selector.app' \
             "release/Link-Selector-macOS-$APP_VERSION-universal.dmg"
 

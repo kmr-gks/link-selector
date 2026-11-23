@@ -18,6 +18,10 @@ macOSではDockにアイコンを表示せず待機します。設定画面を�
 対象はOSが既定ブラウザに渡す `http` / `https` リンクです。macOSでは、Finderの「このアプリケーションで開く」からHTML・XHTML文書を渡すこともできます。
 Windowsでは、Microsoft Store版Firefoxなど、MSIXで対象のプロトコルを登録するブラウザも候補に表示します。
 
+### macOSで初回起動が止まる場合
+
+公証されていない配布版では、macOSが初回起動を止めることがあります。公式リリースから取得したことを確認できる場合は、起動を試したあと、「システム設定」→「プライバシーとセキュリティ」で Link Selector の「このまま開く」を選びます。 [Appleの案内](https://support.apple.com/ja-jp/102445)
+
 ### macOSの設定に表示されない場合
 
 `0.1.0` のアプリには、既定ブラウザ候補の判定に使われるHTML・XHTMLの関連付けがありません。`0.2.0` 以降のアプリを「アプリケーション」にコピーして起動したあと、システム設定を開き直してください。
@@ -40,9 +44,21 @@ cargo test --manifest-path src-tauri/Cargo.toml --locked
 
 [GitHub Actions](https://github.com/kmr-gks/link-selector/actions/workflows/build.yml) は、`main` へのpushとプルリクエストで、両OSのテスト、インストーラーのビルド、配布物の検証を実行します。各実行の成果物からDMGとWindowsインストーラーを取得できます。
 
-`v0.2.0` のようにアプリのバージョンと一致するタグをpushすると、両OSの検証を通過した後に [GitHub Releases](https://github.com/kmr-gks/link-selector/releases) へインストーラーとSHA-256チェックサムを公開します。インストーラー名にはアプリ名、OS名、バージョン、アーキテクチャが含まれます。macOS版はアドホック署名、Windows版は開発者証明書による署名前のビルドです。
+`v0.2.0` のようにアプリのバージョンと一致するタグをpushすると、両OSの検証を通過した後に [GitHub Releases](https://github.com/kmr-gks/link-selector/releases) へインストーラーとSHA-256チェックサムを公開します。インストーラー名にはアプリ名、OS名、バージョン、アーキテクチャが含まれます。macOS版は、署名・公証の設定があるタグではDeveloper IDで署名し、Appleの公証チケットを添付して公開します。設定がない場合はアドホック署名のDMGを公開します。Windows版は開発者証明書による署名前のビルドです。
 
 同じタグでワークフローを再実行すると、CIが作成した下書きから配布物のアップロードと公開を再開できます。すでに公開済みの場合は配布物がそろっていることを確認し、公開済みのファイルを保持します。
+
+### macOS版の署名と公証を設定する
+
+GitHub Actionsのリポジトリシークレットに以下を設定します。公証にはApp Store ConnectのチームAPIキーを使います。
+
+- `APPLE_CERTIFICATE` はDeveloper ID Application証明書と秘密鍵を含む `.p12` のBase64。
+- `APPLE_CERTIFICATE_PASSWORD` はその `.p12` のパスワード。
+- `APPLE_API_KEY` はApp Store ConnectのキーID。
+- `APPLE_API_ISSUER` はApp Store ConnectのIssuer ID。
+- `APPLE_API_KEY_BASE64` はApp Store Connectの `.p8` キーのBase64。
+
+設定はタグからのmacOSビルドで使います。リポジトリ変数 `MACOS_REQUIRE_NOTARIZATION` を `true` にすると、設定がないタグの公開はエラーになります。 [Appleの署名・公証手順](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution)
 
 ## 技術構成
 
