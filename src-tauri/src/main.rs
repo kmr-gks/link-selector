@@ -181,14 +181,16 @@ fn fit_picker(
     window: WebviewWindow,
     content_height: Option<u32>,
     id: Option<u64>,
+    grow_only: Option<bool>,
 ) -> tauri::Result<()> {
+    let grow_only = grow_only.unwrap_or(false);
     if id.is_some_and(|id| {
         window
             .state::<Mutex<PendingLinks>>()
             .lock()
             .unwrap()
             .get_with_id(window.label(), id)
-            .is_none_or(|link| link.presented.is_some())
+            .is_none_or(|link| !grow_only && link.presented.is_some())
     }) {
         return Ok(());
     }
@@ -231,7 +233,7 @@ fn fit_picker(
         .map_or(inner.width, |size| (size.width * scale).round() as u32)
         .min(max_width);
     let height = ((preferred_height * scale).ceil() as u32).min(max_height);
-    if width == 0 || height == 0 {
+    if width == 0 || height == 0 || (grow_only && (preferred.is_some() || height <= inner.height)) {
         return Ok(());
     }
 
@@ -452,7 +454,7 @@ fn show_window(window: &WebviewWindow) {
             .preferred
             .is_some();
         if has_preferred_size {
-            let _ = fit_picker(window.clone(), None, None);
+            let _ = fit_picker(window.clone(), None, None, None);
         }
     }
     let _ = window.unminimize();
@@ -521,7 +523,7 @@ fn main() {
             app.manage(Mutex::new(size));
             if has_preferred_size {
                 if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
-                    let _ = fit_picker(window, None, None);
+                    let _ = fit_picker(window, None, None, None);
                 }
             }
             Ok(())

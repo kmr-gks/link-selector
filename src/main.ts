@@ -139,12 +139,12 @@ function heading(title: string, description: string, isLink = false) {
   return header;
 }
 
-function fitPicker(list?: HTMLUListElement) {
+function fitPicker(list?: HTMLUListElement, growOnly?: true) {
   // A scrollable list's hidden rows do not contribute to the main element's height.
   const contentHeight = list
     ? app.scrollHeight + list.scrollHeight - list.clientHeight
     : current ? app.scrollHeight : null;
-  void invoke("fit_picker", { contentHeight, id: current?.id }).catch(() => {
+  void invoke("fit_picker", { contentHeight, id: current?.id, ...(growOnly && { growOnly }) }).catch(() => {
     // The layout still allows scrolling if the OS cannot resize the window.
   });
 }
@@ -269,7 +269,11 @@ const subscribeToDeferred = subscribeOnce<[number, number]>("picker-deferred", (
   if (current?.id !== id) return;
   current.waiting = Math.max(current.waiting, count);
   const waiting = app.querySelector(".waiting");
-  if (waiting) waiting.textContent = waitingMessage(current.waiting);
+  const message = waitingMessage(current.waiting);
+  if (waiting && waiting.textContent !== message) {
+    waiting.textContent = message;
+    fitPicker(app.querySelector<HTMLUListElement>(".browsers") ?? undefined, true);
+  }
 });
 
 async function initializePicker() {

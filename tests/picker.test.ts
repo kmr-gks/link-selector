@@ -242,6 +242,23 @@ describe("browser picker", () => {
     });
   });
 
+  it("requests more height when a later notice reduces the list viewport", () => {
+    const scrollHeight = vi.spyOn(HTMLElement.prototype, "scrollHeight", "get")
+      .mockImplementation(function (this: HTMLElement) {
+        return this.classList.contains("browsers") ? 423 : 663;
+      });
+    const clientHeight = vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(400);
+    try {
+      request.mockClear();
+      emitDeferred(7, 1);
+      emitDeferred(7, 1);
+      expect(request).toHaveBeenCalledExactlyOnceWith("fit_picker", { contentHeight: 686, id: 7, growOnly: true });
+    } finally {
+      scrollHeight.mockRestore();
+      clientHeight.mockRestore();
+    }
+  });
+
   it("requests space for browser rows below the fold", async () => {
     const scrollHeight = vi.spyOn(HTMLElement.prototype, "scrollHeight", "get")
       .mockImplementation(function (this: HTMLElement) {
