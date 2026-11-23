@@ -198,14 +198,12 @@ fn fit_picker(
     grow_only: Option<bool>,
 ) -> tauri::Result<()> {
     let grow_only = grow_only.unwrap_or(false);
-    if id.is_some_and(|id| {
-        window
-            .state::<Mutex<PendingLinks>>()
-            .lock()
-            .unwrap()
-            .get_with_id(window.label(), id)
-            .is_none_or(|link| !grow_only && link.presented.is_some())
-    }) {
+    let pending = window.state::<Mutex<PendingLinks>>();
+    if !pending
+        .lock()
+        .unwrap()
+        .can_fit(window.label(), id, grow_only)
+    {
         return Ok(());
     }
     if window.is_maximized()? || window.is_fullscreen()? {
@@ -298,7 +296,8 @@ fn dimensions(size: PhysicalSize<u32>, scale: f64) -> Dimensions {
 }
 
 fn record_picker_resize(window: &tauri::Window, size: PhysicalSize<u32>) {
-    if window.is_maximized().unwrap_or(true)
+    if !window.is_visible().unwrap_or(false)
+        || window.is_maximized().unwrap_or(true)
         || window.is_fullscreen().unwrap_or(true)
         || window.is_minimized().unwrap_or(true)
         || window.inner_size().ok() != Some(size)
@@ -353,8 +352,8 @@ fn finish_link(window: &WebviewWindow, id: u64) {
 }
 
 fn show_main_picker(window: &WebviewWindow) {
-    let _ = window.emit("main-picker-changed", ());
     show_window(window);
+    let _ = window.emit("main-picker-changed", ());
 }
 
 fn recover_picker(app: &AppHandle, label: &str) {
@@ -473,6 +472,12 @@ fn position_picker(app: &AppHandle, window: &WebviewWindow, slot: usize) {
 }
 
 fn show_window(window: &WebviewWindow) {
+    let pending = window.state::<Mutex<PendingLinks>>();
+    let id = pending
+        .lock()
+        .unwrap()
+        .get(window.label())
+        .map(|link| link.id);
     if window.label() == MAIN_WINDOW && matches!(window.is_visible(), Ok(false)) {
         let has_preferred_size = window
             .state::<Mutex<PickerSize>>()
@@ -481,10 +486,26 @@ fn show_window(window: &WebviewWindow) {
             .preferred
             .is_some();
         if has_preferred_size {
-            let _ = fit_picker(window.clone(), None, None, None, None);
+            let _ = fit_picker(window.clone(), None, None, id, None);
         }
     }
     let _ = window.unminimize();
+    if let Some(id) = id {
+        if window.is_maximized().unwrap_or(true)
+            || window.is_fullscreen().unwrap_or(true)
+            || window.is_minimized().unwrap_or(true)
+        {
+            pending
+                .lock()
+                .unwrap()
+                .track_restored_size(window.label(), id);
+        } else if let (Ok(size), Ok(scale)) = (window.inner_size(), window.scale_factor()) {
+            pending
+                .lock()
+                .unwrap()
+                .track_loading_size(window.label(), id, dimensions(size, scale));
+        }
+    }
     let _ = window.show();
     let _ = window.set_focus();
 }
@@ -570,6 +591,20 @@ fn main() {
                 if window.try_state::<Mutex<PickerSize>>().is_some() {
                     record_picker_resize(window, *size);
                 }
+            }
+            WindowEvent::ScaleFactorChanged {
+                scale_factor,
+                new_inner_size,
+                ..
+            } => {
+                window
+                    .state::<Mutex<PendingLinks>>()
+                    .lock()
+                    .unwrap()
+                    .record_scale_change(
+                        window.label(),
+                        dimensions(*new_inner_size, *scale_factor),
+                    );
             }
             WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();

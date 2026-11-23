@@ -45,11 +45,18 @@ pub struct PendingLinks {
 pub struct Link {
     pub id: u64,
     pub url: Url,
-    pub presented: Option<Dimensions>,
-    awaiting_normal_size: bool,
+    resize: ResizeTracking,
     fit_padding: Option<f64>,
     pub slot: usize,
     launch: LaunchState,
+}
+
+#[derive(Clone, Copy)]
+enum ResizeTracking {
+    NotShown,
+    Loading(Dimensions),
+    AwaitingNormalSize,
+    Presented(Dimensions),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -79,8 +86,7 @@ impl PendingLinks {
                 Link {
                     id,
                     url,
-                    presented: None,
-                    awaiting_normal_size: false,
+                    resize: ResizeTracking::NotShown,
                     fit_padding: None,
                     slot,
                     launch: LaunchState::Idle,
@@ -99,10 +105,36 @@ impl PendingLinks {
         self.get(window).filter(|link| link.id == id)
     }
 
+    pub fn can_fit(&self, window: &str, id: Option<u64>, grow_only: bool) -> bool {
+        match (self.get(window), id) {
+            (Some(link), Some(id)) => {
+                link.id == id && (grow_only || !matches!(link.resize, ResizeTracking::Presented(_)))
+            }
+            (None, None) => true,
+            _ => false,
+        }
+    }
+
+    pub fn track_loading_size(&mut self, window: &str, id: u64, size: Dimensions) {
+        if let Some(link) = self.by_window.get_mut(window).filter(|link| {
+            link.id == id && matches!(link.resize, ResizeTracking::NotShown) && size.is_valid()
+        }) {
+            link.resize = ResizeTracking::Loading(size);
+        }
+    }
+
+    pub fn record_scale_change(&mut self, window: &str, size: Dimensions) {
+        if let Some(link) = self.by_window.get_mut(window).filter(|_| size.is_valid()) {
+            match &mut link.resize {
+                ResizeTracking::Loading(last) | ResizeTracking::Presented(last) => *last = size,
+                _ => {}
+            }
+        }
+    }
+
     pub fn set_presented(&mut self, window: &str, id: u64, size: Dimensions) {
         if let Some(link) = self.by_window.get_mut(window).filter(|link| link.id == id) {
-            link.presented = Some(size);
-            link.awaiting_normal_size = false;
+            link.resize = ResizeTracking::Presented(size);
         }
     }
 
@@ -116,8 +148,12 @@ impl PendingLinks {
     }
 
     pub fn track_restored_size(&mut self, window: &str, id: u64) {
-        if let Some(link) = self.by_window.get_mut(window).filter(|link| link.id == id) {
-            link.awaiting_normal_size = link.presented.is_none();
+        if let Some(link) = self
+            .by_window
+            .get_mut(window)
+            .filter(|link| link.id == id && !matches!(link.resize, ResizeTracking::Presented(_)))
+        {
+            link.resize = ResizeTracking::AwaitingNormalSize;
         }
     }
 
@@ -125,19 +161,20 @@ impl PendingLinks {
         let Some(link) = self.by_window.get_mut(window).filter(|_| size.is_valid()) else {
             return false;
         };
-        if link.awaiting_normal_size {
-            link.presented = Some(size);
-            link.awaiting_normal_size = false;
-            return false;
+        match link.resize {
+            ResizeTracking::NotShown => false,
+            ResizeTracking::AwaitingNormalSize => {
+                link.resize = ResizeTracking::Presented(size);
+                false
+            }
+            ResizeTracking::Loading(last) | ResizeTracking::Presented(last) => {
+                if !size.differs_from(last) {
+                    return false;
+                }
+                link.resize = ResizeTracking::Presented(size);
+                true
+            }
         }
-        let Some(last) = link.presented.as_mut() else {
-            return false;
-        };
-        if !size.differs_from(*last) {
-            return false;
-        }
-        *last = size;
-        true
     }
 
     pub fn finish(&mut self, window: &str, id: u64) -> Option<Link> {
@@ -172,9 +209,8 @@ impl PendingLinks {
             return false;
         };
         link.slot = 0;
-        link.presented = None;
+        link.resize = ResizeTracking::NotShown;
         link.fit_padding = None;
-        link.awaiting_normal_size = false;
         self.by_window.insert(MAIN_WINDOW.to_owned(), link);
         true
     }
@@ -520,9 +556,52 @@ mod tests {
         links.add([url("https://example.com/first")]);
         links.track_restored_size(MAIN_WINDOW, 1);
         assert!(!links.record_resize(MAIN_WINDOW, restored));
-        assert_eq!(links.get(MAIN_WINDOW).unwrap().presented, Some(restored));
+        assert!(!links.can_fit(MAIN_WINDOW, Some(1), false));
         assert!(links.record_resize(MAIN_WINDOW, manual));
-        assert_eq!(links.get(MAIN_WINDOW).unwrap().presented, Some(manual));
+        assert!(!links.record_resize(MAIN_WINDOW, manual));
+    }
+
+    #[test]
+    fn keeps_the_users_resize_while_the_first_browser_list_is_loading() {
+        let mut links = PendingLinks::default();
+        let start = Dimensions {
+            width: 460.0,
+            height: 465.0,
+        };
+        let chosen = Dimensions {
+            width: 530.0,
+            height: 575.0,
+        };
+        links.add([url("https://example.com/first")]);
+        assert!(!links.record_resize(MAIN_WINDOW, start));
+        links.track_loading_size(MAIN_WINDOW, 1, start);
+        assert!(!links.record_resize(MAIN_WINDOW, start));
+        assert!(links.can_fit(MAIN_WINDOW, Some(1), false));
+
+        assert!(links.record_resize(MAIN_WINDOW, chosen));
+        assert!(!links.can_fit(MAIN_WINDOW, Some(1), false));
+        assert!(!links.record_resize(MAIN_WINDOW, chosen));
+        assert!(!links.can_fit(MAIN_WINDOW, None, false));
+        links.finish(MAIN_WINDOW, 1).unwrap();
+        assert!(links.can_fit(MAIN_WINDOW, None, false));
+    }
+
+    #[test]
+    fn a_monitor_size_change_while_loading_does_not_replace_the_preference() {
+        let mut links = PendingLinks::default();
+        let start = Dimensions {
+            width: 460.0,
+            height: 465.0,
+        };
+        let display_size = Dimensions {
+            width: 455.0,
+            height: 460.0,
+        };
+        links.add([url("https://example.com/first")]);
+        links.track_loading_size(MAIN_WINDOW, 1, start);
+        links.record_scale_change(MAIN_WINDOW, display_size);
+        assert!(!links.record_resize(MAIN_WINDOW, display_size));
+        assert!(links.can_fit(MAIN_WINDOW, Some(1), false));
     }
 
     #[test]
