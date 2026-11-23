@@ -23,16 +23,19 @@ try {
         $archive.Dispose()
     }
     $identity = $manifest.Package.Identity
-    if (-not $identity.Name -or -not $identity.Publisher) {
+    if ($null -eq $identity) { throw 'The Firefox MSIX manifest is missing its package identity' }
+    $name = $identity.GetAttribute('Name')
+    $publisher = $identity.GetAttribute('Publisher')
+    if (-not $name -or -not $publisher) {
         throw 'The Firefox MSIX manifest is missing its package identity'
     }
-    $existing = @(Get-AppxPackage -Name $identity.Name | Where-Object { $_.Publisher -eq $identity.Publisher })
+    $existing = @(Get-AppxPackage -Name $name | Where-Object { $_.Publisher -eq $publisher })
     if ($existing.Count -gt 0) {
         throw 'The Firefox MSIX test requires an environment without this Firefox package family installed.'
     }
 
     Add-AppxPackage -Path $msix
-    $installed = @(Get-AppxPackage -Name $identity.Name | Where-Object { $_.Publisher -eq $identity.Publisher })
+    $installed = @(Get-AppxPackage -Name $name | Where-Object { $_.Publisher -eq $publisher })
     if ($installed.Count -ne 1) { throw 'Expected one newly registered Firefox package' }
     $package = $installed[0]
     $env:LINK_SELECTOR_TEST_MSIX = $package.PackageFamilyName
