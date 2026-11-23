@@ -291,6 +291,25 @@ describe("browser picker", () => {
     await vi.waitFor(() => expect(request).toHaveBeenCalledWith("open_browser", { id: 7, browserId: "browser-two" }));
   });
 
+  it("requests enough height to keep the browser list visible after copying", async () => {
+    const scrollHeight = vi.spyOn(HTMLElement.prototype, "scrollHeight", "get")
+      .mockImplementation(function (this: HTMLElement) {
+        return this.classList.contains("browsers") ? 423 : 663;
+      });
+    const clientHeight = vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(408);
+    try {
+      request.mockClear();
+      document.querySelector<HTMLButtonElement>(".actions button")!.click();
+      await vi.waitFor(() => {
+        expect(document.querySelector(".status")?.textContent).toBe("リンクをコピーしました。");
+        expect(request).toHaveBeenCalledWith("fit_picker", { contentHeight: 678, id: 7, growOnly: true });
+      });
+    } finally {
+      scrollHeight.mockRestore();
+      clientHeight.mockRestore();
+    }
+  });
+
   it("allows copying a link even when no browsers are available", async () => {
     picker = { ...link, browsers: [] };
     emitQueueChange();

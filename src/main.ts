@@ -110,8 +110,16 @@ async function copyLink(id: number) {
 }
 
 function setStatus(message: string) {
-  const status = document.querySelector<HTMLElement>(".status");
-  if (status) status.textContent = message;
+  updatePickerMessage(".status", message);
+}
+
+function updatePickerMessage(selector: string, message: string) {
+  const element = app.querySelector(selector);
+  if (!element || element.textContent === message) return;
+  element.textContent = message;
+  if (current) {
+    fitPicker(app.querySelector<HTMLUListElement>(".browsers") ?? undefined, true);
+  }
 }
 
 function waitingMessage(waiting: number) {
@@ -274,12 +282,7 @@ function updateWaiting([id, count]: Waiting) {
   }
   if (current?.id !== id) return;
   current.waiting = Math.max(current.waiting, count);
-  const waiting = app.querySelector(".waiting");
-  const message = waitingMessage(current.waiting);
-  if (waiting && waiting.textContent !== message) {
-    waiting.textContent = message;
-    fitPicker(app.querySelector<HTMLUListElement>(".browsers") ?? undefined, true);
-  }
+  updatePickerMessage(".waiting", waitingMessage(current.waiting));
 }
 
 const subscribeToDeferred = subscribeOnce<Waiting>("picker-deferred", ({ payload }) => {
