@@ -30,6 +30,44 @@ function Confirm-InstalledArchitecture {
     }
 }
 
+function Confirm-PickerUrls {
+    $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+    try {
+        $listener.Start()
+        $port = $listener.LocalEndpoint.Port
+    } finally {
+        $listener.Stop()
+    }
+
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+    $elevated = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    $policy = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments'
+    $name = [System.IO.Path]::GetFileName($app)
+    # WebView2 ignores environment overrides for elevated hosts starting with Runtime 150.
+    # https://github.com/MicrosoftEdge/WebView2Feedback/issues/5645
+    $policySet = $false
+    try {
+        if ($elevated) {
+            if (!(Test-Path $policy)) { New-Item -Path $policy -Force | Out-Null }
+            $previous = Get-ItemPropertyValue -Path $policy -Name $name -ErrorAction SilentlyContinue
+            New-ItemProperty -Path $policy -Name $name -PropertyType String -Force `
+                -Value "--remote-debugging-address=127.0.0.1 --remote-debugging-port=$port" | Out-Null
+            $policySet = $true
+        }
+        node (Join-Path $PSScriptRoot "check-windows-picker.mjs") $app $port
+        if ($LASTEXITCODE -ne 0) { throw 'The installed app did not render both picker URLs' }
+    } finally {
+        if ($policySet) {
+            if ($null -eq $previous) {
+                Remove-ItemProperty -Path $policy -Name $name
+            } else {
+                Set-ItemProperty -Path $policy -Name $name -Value $previous
+            }
+        }
+    }
+}
+
 try {
     $install = Start-Process $Installer -ArgumentList '/S', "/D=$directory" -Wait -PassThru
     if ($install.ExitCode -ne 0 -or !(Test-Path $app)) { throw 'Silent installation failed' }
@@ -43,8 +81,7 @@ try {
     }
     $command = (Get-Item "$class\shell\open\command").GetValue('')
     if ($command -ne ('"{0}" "%1"' -f $app)) { throw "Incorrect launch command: $command" }
-    node (Join-Path $PSScriptRoot "check-windows-picker.mjs") $app
-    if ($LASTEXITCODE -ne 0) { throw "The installed app did not render both picker URLs" }
+    Confirm-PickerUrls
 } finally {
     if (Test-Path $uninstaller) {
         $uninstall = Start-Process $uninstaller -ArgumentList '/S' -Wait -PassThru

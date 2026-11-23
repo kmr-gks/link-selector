@@ -1,20 +1,10 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { createServer } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
 
-const [app] = process.argv.slice(2);
+const [app, port] = process.argv.slice(2);
 const firstUrl = "https://example.invalid/installer-smoke?link=first";
 const secondUrl = "https://example.invalid/installer-smoke?link=second";
-
-async function getLoopbackPort() {
-  const server = createServer();
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  const { port } = server.address();
-  await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
-  return port;
-}
 
 function readPicker(target) {
   const socket = new WebSocket(target.webSocketDebuggerUrl);
@@ -68,14 +58,13 @@ async function waitForPickers(process, port, matches, description) {
       if (result) return result;
       lastResult = JSON.stringify(pickers);
     } catch (error) {
-      lastResult = String(error);
+      lastResult = error.cause ? `${error}: ${error.cause}` : String(error);
     }
     await delay(250);
   }
   throw new Error(`Timed out waiting for ${description}. Last observation: ${lastResult}`);
 }
 
-const port = await getLoopbackPort();
 // Enable the local inspector only in the installed process launched by CI.
 const env = {
   ...process.env,
