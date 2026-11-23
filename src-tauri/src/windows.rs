@@ -482,7 +482,7 @@ Start-Sleep -Milliseconds 400
         };
         let pending = std::sync::Mutex::new(crate::PendingLinks::default());
         pending.lock().unwrap().add([url.clone()]);
-        let mut request = LaunchRequest::new(&pending, crate::MAIN_WINDOW, 1);
+        let mut request = LaunchRequest::new(&pending, crate::MAIN_WINDOW, 1, &|| {});
         let mut child = spawn_browser(&url, &browser, &mut request).unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(60);
         let exit = loop {
@@ -526,7 +526,7 @@ Start-Sleep -Milliseconds 400
         let url = Url::parse(&format!("http://{}{path}", listener.local_addr().unwrap())).unwrap();
         let pending = std::sync::Mutex::new(crate::PendingLinks::default());
         pending.lock().unwrap().add([url.clone()]);
-        let mut request = LaunchRequest::new(&pending, crate::MAIN_WINDOW, 1);
+        let mut request = LaunchRequest::new(&pending, crate::MAIN_WINDOW, 1, &|| {});
         open_packaged_browser(&url, &family, None, &mut request).unwrap();
 
         let deadline = Instant::now() + Duration::from_secs(30);

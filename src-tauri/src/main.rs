@@ -108,7 +108,11 @@ async fn open_browser(
             None
         };
         let pending = worker_window.state::<Mutex<PendingLinks>>();
-        let mut request = LaunchRequest::new(&pending, worker_window.label(), id);
+        let dismiss = || {
+            let window = worker_window.clone();
+            let _ = worker_window.run_on_main_thread(move || finish_link(&window, id));
+        };
+        let mut request = LaunchRequest::new(&pending, worker_window.label(), id, &dismiss);
         #[cfg(target_os = "windows")]
         let outcome = if let Some(family) = browser.package_family.as_ref() {
             platform::open_packaged_browser(&link.url, family, owner, &mut request)

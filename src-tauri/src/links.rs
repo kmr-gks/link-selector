@@ -44,7 +44,15 @@ pub struct Link {
     pub url: Url,
     pub presented: Option<Dimensions>,
     pub slot: usize,
-    pub launching: bool,
+    launch: LaunchState,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LaunchState {
+    Idle,
+    Submitting { dismiss: bool },
+    Submitted,
+    Dismissing,
 }
 
 impl PendingLinks {
@@ -68,7 +76,7 @@ impl PendingLinks {
                     url,
                     presented: None,
                     slot,
-                    launching: false,
+                    launch: LaunchState::Idle,
                 },
             );
             windows.push(window);
@@ -106,7 +114,14 @@ impl PendingLinks {
     }
 
     pub fn finish(&mut self, window: &str, id: u64) -> Option<Link> {
-        self.get_with_id(window, id)?;
+        let link = self
+            .by_window
+            .get_mut(window)
+            .filter(|link| link.id == id)?;
+        if let LaunchState::Submitting { dismiss } = &mut link.launch {
+            *dismiss = true;
+            return None;
+        }
         self.by_window.remove(window)
     }
 
@@ -161,15 +176,22 @@ pub struct LaunchRequest<'a> {
     window: &'a str,
     id: u64,
     submitted: bool,
+    dismiss: &'a dyn Fn(),
 }
 
 impl<'a> LaunchRequest<'a> {
-    pub fn new(pending: &'a Mutex<PendingLinks>, window: &'a str, id: u64) -> Self {
+    pub fn new(
+        pending: &'a Mutex<PendingLinks>,
+        window: &'a str,
+        id: u64,
+        dismiss: &'a dyn Fn(),
+    ) -> Self {
         Self {
             pending,
             window,
             id,
             submitted: false,
+            dismiss,
         }
     }
 
@@ -179,16 +201,45 @@ impl<'a> LaunchRequest<'a> {
             let Some(link) = pending
                 .by_window
                 .get_mut(self.window)
-                .filter(|link| link.id == self.id && !link.launching)
+                .filter(|link| link.id == self.id && link.launch == LaunchState::Idle)
             else {
                 return Err(LaunchError::DismissedOrAlreadySubmitted);
             };
-            // Claim dispatch after platform preparation and before entering the OS API.
-            link.launching = true;
+            // Defer dismissal only for this picker until the synchronous handoff returns.
+            link.launch = LaunchState::Submitting { dismiss: false };
             self.submitted = true;
         }
 
-        submit().map_err(LaunchError::from)
+        let result = submit().map_err(LaunchError::from);
+        let next = if result.is_ok() {
+            LaunchState::Submitted
+        } else {
+            LaunchState::Idle
+        };
+        let dismiss = self.set_launch_state(next);
+        self.submitted = result.is_ok() && !dismiss;
+        if dismiss {
+            (self.dismiss)();
+        }
+        result
+    }
+
+    fn set_launch_state(&self, next: LaunchState) -> bool {
+        let mut pending = self.pending.lock().unwrap();
+        let Some(link) = pending
+            .by_window
+            .get_mut(self.window)
+            .filter(|link| link.id == self.id)
+        else {
+            return false;
+        };
+        let dismiss = link.launch == (LaunchState::Submitting { dismiss: true });
+        link.launch = if dismiss {
+            LaunchState::Dismissing
+        } else {
+            next
+        };
+        dismiss
     }
 
     pub fn complete(mut self) {
@@ -198,15 +249,8 @@ impl<'a> LaunchRequest<'a> {
 
 impl Drop for LaunchRequest<'_> {
     fn drop(&mut self) {
-        if self.submitted {
-            let mut pending = self.pending.lock().unwrap();
-            if let Some(link) = pending
-                .by_window
-                .get_mut(self.window)
-                .filter(|link| link.id == self.id)
-            {
-                link.launching = false;
-            }
+        if self.submitted && self.set_launch_state(LaunchState::Idle) {
+            (self.dismiss)();
         }
     }
 }
@@ -241,7 +285,7 @@ mod tests {
         let address = url("https://example.com/");
         let pending = Mutex::new(PendingLinks::default());
         pending.lock().unwrap().add([address.clone()]);
-        let mut launch = LaunchRequest::new(&pending, MAIN_WINDOW, 1);
+        let mut launch = LaunchRequest::new(&pending, MAIN_WINDOW, 1, &|| {});
 
         pending.lock().unwrap().finish(MAIN_WINDOW, 1).unwrap();
         pending.lock().unwrap().add([address]);
@@ -254,6 +298,55 @@ mod tests {
     }
 
     #[test]
+    fn dismissing_during_handoff_waits_only_for_that_picker() {
+        let address = url("https://example.com/");
+        let pending = Mutex::new(PendingLinks::default());
+        pending.lock().unwrap().add([address.clone(), address]);
+        let dismissed = std::cell::Cell::new(false);
+        let dismiss = || {
+            assert!(pending.lock().unwrap().finish(MAIN_WINDOW, 1).is_some());
+            dismissed.set(true);
+        };
+        let mut request = LaunchRequest::new(&pending, MAIN_WINDOW, 1, &dismiss);
+        request
+            .submit(|| {
+                let mut links = pending.try_lock().unwrap();
+                assert!(links.finish(MAIN_WINDOW, 1).is_none());
+                assert!(links.finish(MAIN_WINDOW, 1).is_none());
+                assert!(links.get(MAIN_WINDOW).is_some());
+                assert!(links.finish("picker-2", 2).is_some());
+                assert!(!dismissed.get());
+                Ok(())
+            })
+            .unwrap();
+        assert!(dismissed.get());
+        assert!(pending.lock().unwrap().get(MAIN_WINDOW).is_none());
+    }
+
+    #[test]
+    fn failed_handoff_cannot_retry_while_dismissal_is_queued() {
+        let pending = Mutex::new(PendingLinks::default());
+        pending.lock().unwrap().add([url("https://example.com/")]);
+        let dismissals = std::cell::Cell::new(0);
+        let dismiss = || dismissals.set(dismissals.get() + 1);
+        let mut request = LaunchRequest::new(&pending, MAIN_WINDOW, 1, &dismiss);
+        assert!(matches!(
+            request.submit::<()>(|| {
+                assert!(pending.lock().unwrap().finish(MAIN_WINDOW, 1).is_none());
+                Err(io::Error::other("dispatch failed"))
+            }),
+            Err(LaunchError::Platform(_))
+        ));
+        drop(request);
+        assert_eq!(dismissals.get(), 1);
+        assert!(matches!(
+            LaunchRequest::new(&pending, MAIN_WINDOW, 1, &dismiss).submit(|| Ok(())),
+            Err(LaunchError::DismissedOrAlreadySubmitted)
+        ));
+        assert!(pending.lock().unwrap().finish(MAIN_WINDOW, 1).is_some());
+    }
+
+    #[test]
     fn os_submission_and_response_leave_other_pickers_available() {
         let address = url("https://example.com/");
         let pending = Mutex::new(PendingLinks::default());
@@ -261,7 +354,7 @@ mod tests {
             .lock()
             .unwrap()
             .add([address.clone(), address.clone()]);
-        let mut first = LaunchRequest::new(&pending, MAIN_WINDOW, 1);
+        let mut first = LaunchRequest::new(&pending, MAIN_WINDOW, 1, &|| {});
         first
             .submit(|| {
                 let mut links = pending
@@ -273,31 +366,31 @@ mod tests {
             })
             .unwrap();
         assert!(matches!(
-            LaunchRequest::new(&pending, MAIN_WINDOW, 1).submit(|| Ok(())),
+            LaunchRequest::new(&pending, MAIN_WINDOW, 1, &|| {}).submit(|| Ok(())),
             Err(LaunchError::DismissedOrAlreadySubmitted)
         ));
 
         pending.try_lock().unwrap().finish(MAIN_WINDOW, 1).unwrap();
         pending.lock().unwrap().add([address]);
-        let mut second = LaunchRequest::new(&pending, MAIN_WINDOW, 4);
+        let mut second = LaunchRequest::new(&pending, MAIN_WINDOW, 4, &|| {});
         second.submit(|| Ok(())).unwrap();
         drop(first);
         assert!(matches!(
-            LaunchRequest::new(&pending, MAIN_WINDOW, 4).submit(|| Ok(())),
+            LaunchRequest::new(&pending, MAIN_WINDOW, 4, &|| {}).submit(|| Ok(())),
             Err(LaunchError::DismissedOrAlreadySubmitted)
         ));
 
         drop(second);
-        let mut retry = LaunchRequest::new(&pending, MAIN_WINDOW, 4);
+        let mut retry = LaunchRequest::new(&pending, MAIN_WINDOW, 4, &|| {});
         assert!(retry
             .submit::<()>(|| Err(io::Error::other("failed submission")))
             .is_err());
         drop(retry);
-        let mut retry = LaunchRequest::new(&pending, MAIN_WINDOW, 4);
+        let mut retry = LaunchRequest::new(&pending, MAIN_WINDOW, 4, &|| {});
         retry.submit(|| Ok(())).unwrap();
         retry.complete();
         assert!(matches!(
-            LaunchRequest::new(&pending, MAIN_WINDOW, 4).submit(|| Ok(())),
+            LaunchRequest::new(&pending, MAIN_WINDOW, 4, &|| {}).submit(|| Ok(())),
             Err(LaunchError::DismissedOrAlreadySubmitted)
         ));
     }
