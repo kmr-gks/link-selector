@@ -189,9 +189,17 @@ fn fit_picker(
             .unwrap()
             .get_with_id(window.label(), id)
             .is_none_or(|link| link.presented.is_some())
-    }) || window.is_maximized()?
-        || window.is_fullscreen()?
-    {
+    }) {
+        return Ok(());
+    }
+    if window.is_maximized()? || window.is_fullscreen()? {
+        if let Some(id) = id {
+            window
+                .state::<Mutex<PendingLinks>>()
+                .lock()
+                .unwrap()
+                .track_restored_size(window.label(), id);
+        }
         return Ok(());
     }
     let Some(monitor) = window.current_monitor()? else {

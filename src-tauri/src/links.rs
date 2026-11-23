@@ -46,6 +46,7 @@ pub struct Link {
     pub id: u64,
     pub url: Url,
     pub presented: Option<Dimensions>,
+    awaiting_normal_size: bool,
     pub slot: usize,
     launch: LaunchState,
 }
@@ -78,6 +79,7 @@ impl PendingLinks {
                     id,
                     url,
                     presented: None,
+                    awaiting_normal_size: false,
                     slot,
                     launch: LaunchState::Idle,
                 },
@@ -98,18 +100,29 @@ impl PendingLinks {
     pub fn set_presented(&mut self, window: &str, id: u64, size: Dimensions) {
         if let Some(link) = self.by_window.get_mut(window).filter(|link| link.id == id) {
             link.presented = Some(size);
+            link.awaiting_normal_size = false;
+        }
+    }
+
+    pub fn track_restored_size(&mut self, window: &str, id: u64) {
+        if let Some(link) = self.by_window.get_mut(window).filter(|link| link.id == id) {
+            link.awaiting_normal_size = link.presented.is_none();
         }
     }
 
     pub fn record_resize(&mut self, window: &str, size: Dimensions) -> bool {
-        let Some(last) = self
-            .by_window
-            .get_mut(window)
-            .and_then(|link| link.presented.as_mut())
-        else {
+        let Some(link) = self.by_window.get_mut(window).filter(|_| size.is_valid()) else {
             return false;
         };
-        if !size.is_valid() || !size.differs_from(*last) {
+        if link.awaiting_normal_size {
+            link.presented = Some(size);
+            link.awaiting_normal_size = false;
+            return false;
+        }
+        let Some(last) = link.presented.as_mut() else {
+            return false;
+        };
+        if !size.differs_from(*last) {
             return false;
         }
         *last = size;
@@ -149,6 +162,7 @@ impl PendingLinks {
         };
         link.slot = 0;
         link.presented = None;
+        link.awaiting_normal_size = false;
         self.by_window.insert(MAIN_WINDOW.to_owned(), link);
         true
     }
@@ -467,6 +481,25 @@ mod tests {
         assert!(links.finish(MAIN_WINDOW, 1).is_none());
         assert_eq!(links.get_with_id(MAIN_WINDOW, 3).unwrap().url, link);
         assert_eq!(links.get_with_id("picker-2", 2).unwrap().url, link);
+    }
+
+    #[test]
+    fn tracks_manual_resize_after_a_link_is_first_shown_maximized() {
+        let mut links = PendingLinks::default();
+        let restored = Dimensions {
+            width: 460.0,
+            height: 465.0,
+        };
+        let manual = Dimensions {
+            width: 530.0,
+            height: 575.0,
+        };
+        links.add([url("https://example.com/first")]);
+        links.track_restored_size(MAIN_WINDOW, 1);
+        assert!(!links.record_resize(MAIN_WINDOW, restored));
+        assert_eq!(links.get(MAIN_WINDOW).unwrap().presented, Some(restored));
+        assert!(links.record_resize(MAIN_WINDOW, manual));
+        assert_eq!(links.get(MAIN_WINDOW).unwrap().presented, Some(manual));
     }
 
     #[test]
