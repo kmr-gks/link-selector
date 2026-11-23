@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type EventCallback } from "@tauri-apps/api/event";
+import type { EventCallback } from "@tauri-apps/api/event";
+import { listenPickerEvent } from "./picker-events";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import "./style.css";
 
@@ -287,8 +288,8 @@ window.addEventListener("keydown", (event) => {
 
 function subscribeOnce<T>(event: string, handler: EventCallback<T>, onSubscribed?: () => void) {
   let subscription: Promise<unknown> | undefined;
-  return () => subscription ??= listen(event, handler)
-    .catch(() => listen(event, handler))
+  return () => subscription ??= listenPickerEvent(event, handler)
+    .catch(() => listenPickerEvent(event, handler))
     .catch((error) => {
       subscription = undefined;
       throw error;
