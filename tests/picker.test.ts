@@ -168,6 +168,10 @@ describe("browser picker", () => {
     choice.click();
     await vi.waitFor(() => expect(document.querySelector(".status")?.textContent).toBe(""));
     expect(choice.disabled).toBe(true);
+    const copy = document.querySelector<HTMLButtonElement>(".copy-link")!;
+    expect(copy.disabled).toBe(true);
+    copy.dispatchEvent(new MouseEvent("click"));
+    expect(request).not.toHaveBeenCalledWith("copy_link", { id: 7 });
     choice.click();
     key("1");
     expect(request.mock.calls.filter(([command]) => command === "open_browser")).toHaveLength(1);
@@ -175,6 +179,8 @@ describe("browser picker", () => {
     await vi.waitFor(() => {
       expect(document.querySelector(".link-url")?.textContent).toBe("https://example.com/next");
       expect(document.querySelector<HTMLButtonElement>(".browser")?.disabled).toBe(false);
+      expect(document.querySelector<HTMLButtonElement>(".copy-link")?.disabled).toBe(false);
+      expect(request).toHaveBeenCalledWith("picker_rendered", { id: 8 });
     });
   });
 
@@ -449,6 +455,29 @@ describe("main picker initialization", () => {
     await vi.advanceTimersByTimeAsync(4000);
     expect(subscribe.mock.calls.filter(([name]) => name === pickerDeferred)).toHaveLength(3);
     expect(request.mock.calls.filter(([command]) => command === "picker_state")).toEqual([["picker_state"]]);
+  });
+
+  it("retries a failed waiting-count lookup after the listener recovers", async () => {
+    failEvent = pickerDeferred;
+    failuresRemaining = 2;
+    let lookups = 0;
+    request.mockImplementation(async (command) => {
+      if (command === "picker_state") return { ...link } as never;
+      if (command === "picker_waiting") {
+        if (++lookups === 1) throw new Error("temporary IPC failure");
+        return [link.id, 2] as never;
+      }
+      return undefined as never;
+    });
+
+    await import("../src/main");
+    await vi.waitFor(() => expect(document.querySelector(".link-url")?.textContent).toBe(link.url));
+    await vi.advanceTimersByTimeAsync(250);
+    expect(lookups).toBe(1);
+    await vi.advanceTimersByTimeAsync(250);
+    expect(document.querySelector(".waiting")?.textContent).toContain("2 件");
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(lookups).toBe(2);
   });
 
   it("reconciles links queued before the deferred listener registers", async () => {

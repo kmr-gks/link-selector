@@ -39,6 +39,7 @@ pub struct PendingLinks {
     next_id: u64,
     by_window: HashMap<String, Link>,
     deferred: VecDeque<Link>,
+    rendered_main_id: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -109,6 +110,17 @@ impl PendingLinks {
 
     pub fn get_with_id(&self, window: &str, id: u64) -> Option<&Link> {
         self.get(window).filter(|link| link.id == id)
+    }
+
+    pub fn confirm_main_render(&mut self, id: u64) {
+        if self.get_with_id(MAIN_WINDOW, id).is_some() {
+            self.rendered_main_id = Some(id);
+        }
+    }
+
+    pub fn close_request_id(&self, window: &str) -> Option<u64> {
+        let id = self.get(window)?.id;
+        (window != MAIN_WINDOW || self.rendered_main_id == Some(id)).then_some(id)
     }
 
     pub fn can_fit(&self, window: &str, id: Option<u64>, grow_only: bool) -> bool {
@@ -732,6 +744,24 @@ mod tests {
         assert!(links.show_next_deferred(None));
         assert_eq!(links.get_with_id(MAIN_WINDOW, 3).unwrap().url, third);
         assert_eq!(links.deferred_count(), 0);
+    }
+
+    #[test]
+    fn repeated_native_close_cannot_discard_a_link_that_has_not_rendered() {
+        let mut links = PendingLinks::default();
+        let address = url("https://example.com/");
+        links.add([address.clone(), address], None);
+        assert_eq!(links.close_request_id("picker-2"), Some(2));
+        assert!(!links.defer("picker-2", None));
+        links.confirm_main_render(1);
+        let id = links.close_request_id(MAIN_WINDOW).unwrap();
+        links.finish(MAIN_WINDOW, id).unwrap();
+        assert!(links.show_next_deferred(None));
+        links.confirm_main_render(1);
+        assert_eq!(links.close_request_id(MAIN_WINDOW), None);
+        assert_eq!(links.get(MAIN_WINDOW).unwrap().id, 2);
+        links.confirm_main_render(2);
+        assert_eq!(links.close_request_id(MAIN_WINDOW), Some(2));
     }
 
     #[test]

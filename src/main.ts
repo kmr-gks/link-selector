@@ -87,11 +87,13 @@ function browserChoicesDisabled(id: number) {
   return id === launchingLinkId || id === closingLinkId;
 }
 
-function updateBrowserChoices(id: number) {
+function updatePickerActions(id: number) {
   const disabled = browserChoicesDisabled(id);
   app.querySelectorAll<HTMLButtonElement>(".browser").forEach((button) => {
     button.disabled = disabled;
   });
+  const copy = app.querySelector<HTMLButtonElement>(".copy-link");
+  if (copy) copy.disabled = id === closingLinkId;
 }
 
 async function processLink(command: "open_browser" | "cancel_link", browser?: Browser) {
@@ -103,7 +105,7 @@ async function processLink(command: "open_browser" | "cancel_link", browser?: Br
   } else {
     closingLinkId = id;
   }
-  updateBrowserChoices(id);
+  updatePickerActions(id);
   try {
     await invoke(command, { id, browserId: browser?.id });
     if (command === "open_browser" && current?.id === id) closingLinkId = id;
@@ -113,13 +115,14 @@ async function processLink(command: "open_browser" | "cancel_link", browser?: Br
   } finally {
     if (command === "open_browser" && launchingLinkId === id) launchingLinkId = undefined;
     if (current?.id === id) {
-      updateBrowserChoices(id);
+      updatePickerActions(id);
       updatePickerMessage(".status", statusText());
     }
   }
 }
 
 async function copyLink(id: number) {
+  if (current?.id !== id || id === closingLinkId) return;
   try {
     await invoke("copy_link", { id });
     if (current?.id === id) setStatus("リンクをコピーしました。");
@@ -234,8 +237,10 @@ function render() {
     list.append(row);
   }
   const footer = element("footer", "actions");
+  const copy = button("リンクをコピー", "secondary copy-link", () => void copyLink(id));
+  copy.disabled = id === closingLinkId;
   footer.append(
-    button("リンクをコピー", "secondary", () => void copyLink(id)),
+    copy,
     button("キャンセル", "secondary", () => void processLink("cancel_link")),
   );
   const waiting = element("p", "waiting", waitingMessage(current.waiting));
@@ -247,6 +252,7 @@ function render() {
     status,
     footer,
   );
+  if (isMainWindow) acknowledgePicker(id);
   fitPicker(browsers.length ? list : undefined);
   if (!isWindows && icons.size > 0) {
     // Allow a paint with the browser names and buttons before decoding icons.
@@ -254,6 +260,13 @@ function render() {
       if (current?.id === id) void loadIcons(id, icons);
     }));
   }
+}
+
+function acknowledgePicker(id: number, delay = 250) {
+  if (current?.id !== id) return;
+  void invoke("picker_rendered", { id }).catch(() => {
+    window.setTimeout(() => acknowledgePicker(id, Math.min(delay * 2, 4000)), delay);
+  });
 }
 
 async function loadIcons(id: number, placeholders: Map<string, HTMLElement>) {
@@ -311,15 +324,19 @@ function updateWaiting([id, count]: Waiting) {
   updatePickerMessage(".waiting", waitingMessage(current.waiting));
 }
 
+function reconcileWaiting(delay = 250) {
+  void invoke<Waiting | null>("picker_waiting").then((waiting) => {
+    if (waiting) updateWaiting(waiting);
+  }).catch(() => {
+    window.setTimeout(() => reconcileWaiting(Math.min(delay * 2, 4000)), delay);
+  });
+}
+
 const subscribeToDeferred = subscribeOnce<Waiting>("picker-deferred", ({ payload }) => {
   updateWaiting(payload);
 }, () => {
   // If the first snapshot already started, reconcile links queued before registration.
-  if (listenersReady) {
-    void invoke<Waiting | null>("picker_waiting").then((waiting) => {
-      if (waiting) updateWaiting(waiting);
-    }).catch(() => {});
-  }
+  if (listenersReady) reconcileWaiting();
 });
 
 function recoverDeferredSubscription(delay = 250) {

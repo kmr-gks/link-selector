@@ -61,6 +61,13 @@ fn picker_state(window: WebviewWindow, state: State<'_, Mutex<PendingLinks>>) ->
 }
 
 #[tauri::command]
+fn picker_rendered(window: WebviewWindow, state: State<'_, Mutex<PendingLinks>>, id: u64) {
+    if window.label() == MAIN_WINDOW {
+        state.lock().unwrap().confirm_main_render(id);
+    }
+}
+
+#[tauri::command]
 fn picker_waiting(
     window: WebviewWindow,
     state: State<'_, Mutex<PendingLinks>>,
@@ -613,6 +620,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             picker_state,
+            picker_rendered,
             picker_icons,
             picker_waiting,
             open_browser,
@@ -649,17 +657,21 @@ fn main() {
                 api.prevent_close();
                 if let Some(webview) = window.app_handle().get_webview_window(window.label()) {
                     let state = window.state::<Mutex<PendingLinks>>();
-                    let id = state
-                        .lock()
-                        .unwrap()
-                        .get(window.label())
-                        .map(|link| link.id);
+                    let (has_link, id) = {
+                        let pending = state.lock().unwrap();
+                        (
+                            pending.get(window.label()).is_some(),
+                            pending.close_request_id(window.label()),
+                        )
+                    };
                     if let Some(id) = id {
                         finish_link(&webview, id);
-                    } else if window.label() == MAIN_WINDOW {
-                        let _ = webview.hide();
-                    } else {
-                        let _ = webview.destroy();
+                    } else if !has_link {
+                        if window.label() == MAIN_WINDOW {
+                            let _ = webview.hide();
+                        } else {
+                            let _ = webview.destroy();
+                        }
                     }
                 }
             }
