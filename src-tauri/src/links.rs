@@ -8,17 +8,14 @@ use tauri::Url;
 
 pub const MAIN_WINDOW: &str = "main";
 
-#[cfg(any(target_os = "macos", test))]
 pub struct StartupLinks(Option<Vec<Url>>);
 
-#[cfg(any(target_os = "macos", test))]
 impl Default for StartupLinks {
     fn default() -> Self {
         Self(Some(Vec::new()))
     }
 }
 
-#[cfg(any(target_os = "macos", test))]
 impl StartupLinks {
     pub fn route(&mut self, urls: Vec<Url>) -> Option<Vec<Url>> {
         if let Some(queued) = &mut self.0 {

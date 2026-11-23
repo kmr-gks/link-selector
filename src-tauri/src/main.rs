@@ -472,6 +472,10 @@ fn receive_arguments(app: &AppHandle, args: impl IntoIterator<Item = String>) {
         .into_iter()
         .filter_map(|argument| Url::parse(&argument).ok())
         .collect();
+    let startup = app.state::<Mutex<links::StartupLinks>>();
+    let Some(urls) = startup.lock().unwrap().route(urls) else {
+        return;
+    };
     if !receive_links(app, urls) {
         reopen(app);
     }
@@ -480,9 +484,11 @@ fn receive_arguments(app: &AppHandle, args: impl IntoIterator<Item = String>) {
 fn main() {
     let builder = tauri::Builder::default();
     #[cfg(target_os = "windows")]
-    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _| {
-        receive_arguments(app, args.into_iter().skip(1));
-    }));
+    let builder = builder
+        .manage(Mutex::new(links::StartupLinks::default()))
+        .plugin(tauri_plugin_single_instance::init(|app, args, _| {
+            receive_arguments(app, args.into_iter().skip(1));
+        }));
 
     #[cfg(target_os = "macos")]
     let mut startup_links = links::StartupLinks::default();
@@ -506,13 +512,6 @@ fn main() {
                     let _ = fit_picker(window, None, None);
                 }
             }
-            #[cfg(target_os = "windows")]
-            receive_arguments(
-                app.handle(),
-                std::env::args_os()
-                    .skip(1)
-                    .filter_map(|arg| arg.into_string().ok()),
-            );
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -566,6 +565,16 @@ fn main() {
                 if let Some(urls) = startup_links.route(urls) {
                     receive_links(app, urls);
                 }
+            }
+            #[cfg(target_os = "windows")]
+            RunEvent::Ready => {
+                let startup = app.state::<Mutex<links::StartupLinks>>();
+                let forwarded = startup.lock().unwrap().ready();
+                let initial = std::env::args_os()
+                    .skip(1)
+                    .filter_map(|arg| arg.into_string().ok())
+                    .filter_map(|arg| Url::parse(&arg).ok());
+                receive_links(app, initial.chain(forwarded).collect());
             }
             #[cfg(target_os = "macos")]
             RunEvent::Ready => {
