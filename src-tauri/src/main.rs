@@ -199,13 +199,28 @@ fn fit_picker(
 ) -> tauri::Result<()> {
     let grow_only = grow_only.unwrap_or(false);
     let pending = window.state::<Mutex<PendingLinks>>();
-    if !pending
-        .lock()
-        .unwrap()
-        .can_fit(window.label(), id, grow_only)
-    {
-        return Ok(());
-    }
+    let preferred = if let Some(id) = id {
+        let pending = pending.lock().unwrap();
+        if !pending.can_fit(window.label(), Some(id), grow_only) {
+            return Ok(());
+        }
+        pending
+            .get_with_id(window.label(), id)
+            .and_then(|link| link.preferred_size)
+    } else {
+        if !pending
+            .lock()
+            .unwrap()
+            .can_fit(window.label(), None, grow_only)
+        {
+            return Ok(());
+        }
+        window
+            .state::<Mutex<PickerSize>>()
+            .lock()
+            .unwrap()
+            .preferred
+    };
     if window.is_maximized()? || window.is_fullscreen()? {
         if let Some(id) = id {
             window
@@ -234,8 +249,6 @@ fn fit_picker(
     let area = monitor.work_area();
     let max_height = area.size.height.saturating_sub(frame_height);
     let scale = window.scale_factor()?;
-    let state = window.state::<Mutex<PickerSize>>();
-    let preferred = state.lock().unwrap().preferred;
     let max_width = area.size.width.saturating_sub(frame_width);
     let height = if let Some(size) = preferred {
         (size.height * scale).ceil() as u32
@@ -258,7 +271,7 @@ fn fit_picker(
         .map_or(inner.width, |size| (size.width * scale).round() as u32)
         .min(max_width);
     let height = height.min(max_height);
-    if width == 0 || height == 0 || (grow_only && (preferred.is_some() || height <= inner.height)) {
+    if width == 0 || height == 0 || (grow_only && height <= inner.height) {
         return Ok(());
     }
 
@@ -330,13 +343,18 @@ fn save_picker_size(app: &AppHandle) {
 
 fn finish_link(window: &WebviewWindow, id: u64) {
     let main = window.label() == MAIN_WINDOW;
+    let preferred = window
+        .state::<Mutex<PickerSize>>()
+        .lock()
+        .unwrap()
+        .preferred;
     let show_next = {
         let pending = window.state::<Mutex<PendingLinks>>();
         let mut pending = pending.lock().unwrap();
         if pending.finish(window.label(), id).is_none() {
             return;
         }
-        main && pending.show_next_deferred()
+        main && pending.show_next_deferred(preferred)
     };
     save_picker_size(window.app_handle());
     if main {
@@ -358,9 +376,10 @@ fn show_main_picker(window: &WebviewWindow) {
 
 fn recover_picker(app: &AppHandle, label: &str) {
     let pending = app.state::<Mutex<PendingLinks>>();
+    let preferred = app.state::<Mutex<PickerSize>>().lock().unwrap().preferred;
     let (show_next, waiting) = {
         let mut pending = pending.lock().unwrap();
-        let show_next = pending.defer(label);
+        let show_next = pending.defer(label, preferred);
         let waiting = pending
             .get(MAIN_WINDOW)
             .map(|link| (link.id, pending.deferred_count()));
@@ -376,7 +395,12 @@ fn recover_picker(app: &AppHandle, label: &str) {
 }
 
 fn receive_links(app: &AppHandle, urls: Vec<Url>) -> bool {
-    let windows = app.state::<Mutex<PendingLinks>>().lock().unwrap().add(urls);
+    let preferred = app.state::<Mutex<PickerSize>>().lock().unwrap().preferred;
+    let windows = app
+        .state::<Mutex<PendingLinks>>()
+        .lock()
+        .unwrap()
+        .add(urls, preferred);
     if windows.is_empty() {
         return false;
     }
@@ -419,7 +443,13 @@ fn create_picker(app: &AppHandle, label: &str) -> tauri::Result<()> {
     config.label = label.to_owned();
     config.visible = false;
     config.focus = false;
-    if let Some(size) = app.state::<Mutex<PickerSize>>().lock().unwrap().preferred {
+    let preferred = app
+        .state::<Mutex<PendingLinks>>()
+        .lock()
+        .unwrap()
+        .get(label)
+        .and_then(|link| link.preferred_size);
+    if let Some(size) = preferred {
         config.width = size.width;
         config.height = size.height;
     }
@@ -473,19 +503,24 @@ fn position_picker(app: &AppHandle, window: &WebviewWindow, slot: usize) {
 
 fn show_window(window: &WebviewWindow) {
     let pending = window.state::<Mutex<PendingLinks>>();
-    let id = pending
+    let link = pending
         .lock()
         .unwrap()
         .get(window.label())
-        .map(|link| link.id);
+        .map(|link| (link.id, link.preferred_size));
+    let id = link.map(|(id, _)| id);
     if window.label() == MAIN_WINDOW && matches!(window.is_visible(), Ok(false)) {
-        let has_preferred_size = window
-            .state::<Mutex<PickerSize>>()
-            .lock()
-            .unwrap()
-            .preferred
-            .is_some();
-        if has_preferred_size {
+        let preferred = link.map_or_else(
+            || {
+                window
+                    .state::<Mutex<PickerSize>>()
+                    .lock()
+                    .unwrap()
+                    .preferred
+            },
+            |(_, size)| size,
+        );
+        if preferred.is_some() {
             let _ = fit_picker(window.clone(), None, None, id, None);
         }
     }

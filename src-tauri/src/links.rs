@@ -45,6 +45,7 @@ pub struct PendingLinks {
 pub struct Link {
     pub id: u64,
     pub url: Url,
+    pub preferred_size: Option<Dimensions>,
     resize: ResizeTracking,
     fit_padding: Option<f64>,
     pub slot: usize,
@@ -68,7 +69,11 @@ enum LaunchState {
 }
 
 impl PendingLinks {
-    pub fn add(&mut self, urls: impl IntoIterator<Item = Url>) -> Vec<String> {
+    pub fn add(
+        &mut self,
+        urls: impl IntoIterator<Item = Url>,
+        preferred_size: Option<Dimensions>,
+    ) -> Vec<String> {
         let mut windows = Vec::new();
         for url in urls.into_iter().filter(supported) {
             self.next_id += 1;
@@ -86,6 +91,7 @@ impl PendingLinks {
                 Link {
                     id,
                     url,
+                    preferred_size,
                     resize: ResizeTracking::NotShown,
                     fit_padding: None,
                     slot,
@@ -108,7 +114,12 @@ impl PendingLinks {
     pub fn can_fit(&self, window: &str, id: Option<u64>, grow_only: bool) -> bool {
         match (self.get(window), id) {
             (Some(link), Some(id)) => {
-                link.id == id && (grow_only || !matches!(link.resize, ResizeTracking::Presented(_)))
+                link.id == id
+                    && if grow_only {
+                        link.preferred_size.is_none()
+                    } else {
+                        !matches!(link.resize, ResizeTracking::Presented(_))
+                    }
             }
             (None, None) => true,
             _ => false,
@@ -179,6 +190,7 @@ impl PendingLinks {
                     return false;
                 }
                 link.resize = ResizeTracking::Presented(size);
+                link.preferred_size = Some(size);
                 true
             }
         }
@@ -200,15 +212,15 @@ impl PendingLinks {
         self.by_window.remove(window)
     }
 
-    pub fn defer(&mut self, window: &str) -> bool {
+    pub fn defer(&mut self, window: &str, preferred_size: Option<Dimensions>) -> bool {
         let Some(link) = self.remove(window) else {
             return false;
         };
         self.deferred.push_back(link);
-        self.show_next_deferred()
+        self.show_next_deferred(preferred_size)
     }
 
-    pub fn show_next_deferred(&mut self) -> bool {
+    pub fn show_next_deferred(&mut self, preferred_size: Option<Dimensions>) -> bool {
         if self.by_window.contains_key(MAIN_WINDOW) {
             return false;
         }
@@ -216,6 +228,7 @@ impl PendingLinks {
             return false;
         };
         link.slot = 0;
+        link.preferred_size = preferred_size;
         link.resize = ResizeTracking::NotShown;
         link.fit_padding = None;
         self.by_window.insert(MAIN_WINDOW.to_owned(), link);
@@ -356,11 +369,11 @@ mod tests {
     fn dismissal_during_preparation_prevents_submission() {
         let address = url("https://example.com/");
         let pending = Mutex::new(PendingLinks::default());
-        pending.lock().unwrap().add([address.clone()]);
+        pending.lock().unwrap().add([address.clone()], None);
         let mut launch = LaunchRequest::new(&pending, MAIN_WINDOW, 1, &|| {});
 
         pending.lock().unwrap().finish(MAIN_WINDOW, 1).unwrap();
-        pending.lock().unwrap().add([address]);
+        pending.lock().unwrap().add([address], None);
         assert!(matches!(
             launch
                 .submit(|| -> io::Result<()> { panic!("the dismissed URL must not be submitted") }),
@@ -373,7 +386,10 @@ mod tests {
     fn dismissing_during_handoff_waits_only_for_that_picker() {
         let address = url("https://example.com/");
         let pending = Mutex::new(PendingLinks::default());
-        pending.lock().unwrap().add([address.clone(), address]);
+        pending
+            .lock()
+            .unwrap()
+            .add([address.clone(), address], None);
         let dismissed = std::cell::Cell::new(false);
         let dismiss = || {
             assert!(pending.lock().unwrap().finish(MAIN_WINDOW, 1).is_some());
@@ -398,7 +414,10 @@ mod tests {
     #[test]
     fn failed_handoff_cannot_retry_while_dismissal_is_queued() {
         let pending = Mutex::new(PendingLinks::default());
-        pending.lock().unwrap().add([url("https://example.com/")]);
+        pending
+            .lock()
+            .unwrap()
+            .add([url("https://example.com/")], None);
         let dismissals = std::cell::Cell::new(0);
         let dismiss = || dismissals.set(dismissals.get() + 1);
         let mut request = LaunchRequest::new(&pending, MAIN_WINDOW, 1, &dismiss);
@@ -425,7 +444,7 @@ mod tests {
         pending
             .lock()
             .unwrap()
-            .add([address.clone(), address.clone()]);
+            .add([address.clone(), address.clone()], None);
         let mut first = LaunchRequest::new(&pending, MAIN_WINDOW, 1, &|| {});
         first
             .submit(|| {
@@ -433,7 +452,7 @@ mod tests {
                     .try_lock()
                     .expect("OS handoff must not lock the queue");
                 assert!(links.finish("picker-2", 2).is_some());
-                assert_eq!(links.add([address.clone()]), ["picker-3"]);
+                assert_eq!(links.add([address.clone()], None), ["picker-3"]);
                 Ok(())
             })
             .unwrap();
@@ -443,7 +462,7 @@ mod tests {
         ));
 
         pending.try_lock().unwrap().finish(MAIN_WINDOW, 1).unwrap();
-        pending.lock().unwrap().add([address]);
+        pending.lock().unwrap().add([address], None);
         let mut second = LaunchRequest::new(&pending, MAIN_WINDOW, 4, &|| {});
         second.submit(|| Ok(())).unwrap();
         drop(first);
@@ -492,7 +511,7 @@ mod tests {
         assert!(pending.get(MAIN_WINDOW).is_none());
 
         let ready = startup.ready([url("https://example.com/initial")]);
-        let windows = pending.add(ready);
+        let windows = pending.add(ready, None);
         assert_eq!(windows, ["main", "picker-2", "picker-3"]);
         let paths: Vec<_> = windows
             .iter()
@@ -504,19 +523,25 @@ mod tests {
         let running = startup
             .route(vec![url("https://example.com/running")])
             .unwrap();
-        assert_eq!(pending.add(running), ["picker-4"]);
+        assert_eq!(pending.add(running, None), ["picker-4"]);
     }
 
     #[test]
     fn links_get_independent_windows_and_can_finish_out_of_order() {
         let mut links = PendingLinks::default();
         assert!(links
-            .add([url("file:///tmp/local.txt"), url("mailto:test@example.com")])
+            .add(
+                [url("file:///tmp/local.txt"), url("mailto:test@example.com")],
+                None
+            )
             .is_empty());
-        let windows = links.add([
-            url("https://example.com/first"),
-            url("http://example.com/second"),
-        ]);
+        let windows = links.add(
+            [
+                url("https://example.com/first"),
+                url("http://example.com/second"),
+            ],
+            None,
+        );
         assert_eq!(windows, ["main", "picker-2"]);
         assert_eq!(links.get(MAIN_WINDOW).unwrap().url.path(), "/first");
         assert_eq!(links.get("picker-2").unwrap().url.path(), "/second");
@@ -530,9 +555,9 @@ mod tests {
     fn repeated_urls_stay_independent_and_reusing_main_rejects_old_actions() {
         let mut links = PendingLinks::default();
         let link = url("https://example.com/");
-        links.add([link.clone(), link.clone()]);
+        links.add([link.clone(), link.clone()], None);
         assert!(links.finish(MAIN_WINDOW, 1).is_some());
-        assert_eq!(links.add([link.clone()]), [MAIN_WINDOW]);
+        assert_eq!(links.add([link.clone()], None), [MAIN_WINDOW]);
         assert!(links.finish(MAIN_WINDOW, 1).is_none());
         assert_eq!(links.get_with_id(MAIN_WINDOW, 3).unwrap().url, link);
         assert_eq!(links.get_with_id("picker-2", 2).unwrap().url, link);
@@ -541,11 +566,11 @@ mod tests {
     #[test]
     fn later_fit_requests_reuse_the_original_viewport_padding() {
         let mut links = PendingLinks::default();
-        links.add([url("https://example.com/first")]);
+        links.add([url("https://example.com/first")], None);
         assert_eq!(links.fit_padding(MAIN_WINDOW, 1, Some(32.0)), 32.0);
         assert_eq!(links.fit_padding(MAIN_WINDOW, 1, Some(55.0)), 32.0);
         links.finish(MAIN_WINDOW, 1).unwrap();
-        links.add([url("https://example.com/next")]);
+        links.add([url("https://example.com/next")], None);
         assert_eq!(links.fit_padding(MAIN_WINDOW, 2, Some(25.0)), 25.0);
     }
 
@@ -560,7 +585,7 @@ mod tests {
             width: 530.0,
             height: 575.0,
         };
-        links.add([url("https://example.com/first")]);
+        links.add([url("https://example.com/first")], None);
         links.track_restored_size(MAIN_WINDOW, 1);
         assert!(!links.record_resize(MAIN_WINDOW, restored));
         assert!(!links.can_fit(MAIN_WINDOW, Some(1), false));
@@ -579,7 +604,7 @@ mod tests {
             width: 530.0,
             height: 575.0,
         };
-        links.add([url("https://example.com/first")]);
+        links.add([url("https://example.com/first")], None);
         assert!(!links.record_resize(MAIN_WINDOW, start));
         links.track_loading_size(MAIN_WINDOW, 1, start);
         assert!(!links.record_resize(MAIN_WINDOW, start));
@@ -608,11 +633,34 @@ mod tests {
             width: 455.0,
             height: 690.0,
         };
-        links.add([url("https://example.com/first")]);
+        links.add([url("https://example.com/first")], None);
         links.set_presented(MAIN_WINDOW, 1, normal);
         links.record_scale_change(MAIN_WINDOW, maximized, false);
         assert!(!links.record_resize(MAIN_WINDOW, restored));
         assert!(links.record_resize(MAIN_WINDOW, normal));
+    }
+
+    #[test]
+    fn only_new_pickers_inherit_the_most_recent_manual_size() {
+        let mut links = PendingLinks::default();
+        let automatic = Dimensions {
+            width: 460.0,
+            height: 695.0,
+        };
+        let custom = Dimensions {
+            width: 530.0,
+            height: 575.0,
+        };
+        let address = url("https://example.com/");
+        links.add([address.clone(), address.clone()], None);
+        links.set_presented(MAIN_WINDOW, 1, automatic);
+        links.set_presented("picker-2", 2, automatic);
+        assert!(links.record_resize("picker-2", custom));
+        assert!(links.can_fit(MAIN_WINDOW, Some(1), true));
+        assert!(!links.can_fit("picker-2", Some(2), true));
+        links.add([address], Some(custom));
+        assert_eq!(links.get("picker-3").unwrap().preferred_size, Some(custom));
+        assert!(!links.can_fit("picker-3", Some(3), true));
     }
 
     #[test]
@@ -626,7 +674,7 @@ mod tests {
             width: 455.0,
             height: 460.0,
         };
-        links.add([url("https://example.com/first")]);
+        links.add([url("https://example.com/first")], None);
         links.track_loading_size(MAIN_WINDOW, 1, start);
         links.record_scale_change(MAIN_WINDOW, display_size, true);
         assert!(!links.record_resize(MAIN_WINDOW, display_size));
@@ -649,14 +697,14 @@ mod tests {
             width: 580.0,
             height: 600.0,
         };
-        links.add([url("https://example.com/first")]);
+        links.add([url("https://example.com/first")], None);
         assert!(!links.record_resize(MAIN_WINDOW, default));
         links.set_presented(MAIN_WINDOW, 1, default);
         assert!(!links.record_resize(MAIN_WINDOW, default));
         assert!(links.record_resize(MAIN_WINDOW, first));
         size.remember(first);
 
-        links.add([url("https://example.com/second")]);
+        links.add([url("https://example.com/second")], None);
         links.set_presented("picker-2", 2, size.preferred.unwrap());
         assert!(!links.record_resize("picker-2", first));
         assert!(links.record_resize("picker-2", second));
@@ -672,16 +720,16 @@ mod tests {
         let first = url("https://example.com/first");
         let second = url("https://example.com/second?q=a%20b");
         let third = url("https://example.com/third");
-        links.add([first, second.clone(), third.clone()]);
-        assert!(!links.defer("picker-2"));
-        assert!(!links.defer("picker-3"));
-        assert!(!links.defer("picker-3"));
+        links.add([first, second.clone(), third.clone()], None);
+        assert!(!links.defer("picker-2", None));
+        assert!(!links.defer("picker-3", None));
+        assert!(!links.defer("picker-3", None));
         assert_eq!(links.deferred_count(), 2);
         links.finish(MAIN_WINDOW, 1).unwrap();
-        assert!(links.show_next_deferred());
+        assert!(links.show_next_deferred(None));
         assert_eq!(links.get_with_id(MAIN_WINDOW, 2).unwrap().url, second);
         links.finish(MAIN_WINDOW, 2).unwrap();
-        assert!(links.show_next_deferred());
+        assert!(links.show_next_deferred(None));
         assert_eq!(links.get_with_id(MAIN_WINDOW, 3).unwrap().url, third);
         assert_eq!(links.deferred_count(), 0);
     }
@@ -690,9 +738,9 @@ mod tests {
     fn immediately_recovers_a_failed_window_if_the_main_picker_is_free() {
         let mut links = PendingLinks::default();
         let address = url("https://example.com/");
-        links.add([address.clone(), address.clone()]);
+        links.add([address.clone(), address.clone()], None);
         links.finish(MAIN_WINDOW, 1).unwrap();
-        assert!(links.defer("picker-2"));
+        assert!(links.defer("picker-2", None));
         assert_eq!(links.get_with_id(MAIN_WINDOW, 2).unwrap().url, address);
     }
 
@@ -701,15 +749,21 @@ mod tests {
     fn accepts_only_local_html_documents() {
         let mut links = PendingLinks::default();
         assert!(links
-            .add([
-                url("file://server/share/index.html"),
-                url("file:///tmp/image.png"),
-            ])
+            .add(
+                [
+                    url("file://server/share/index.html"),
+                    url("file:///tmp/image.png"),
+                ],
+                None
+            )
             .is_empty());
-        let windows = links.add([
-            url("file:///tmp/Test%20Page.HTML"),
-            url("file:///tmp/test.xhtml"),
-        ]);
+        let windows = links.add(
+            [
+                url("file:///tmp/Test%20Page.HTML"),
+                url("file:///tmp/test.xhtml"),
+            ],
+            None,
+        );
         assert_eq!(windows.len(), 2);
         assert!(links
             .get(MAIN_WINDOW)
@@ -723,10 +777,13 @@ mod tests {
     #[test]
     fn accepts_short_shtml_and_xhtml_extensions_registered_by_macos() {
         let mut links = PendingLinks::default();
-        let windows = links.add([
-            url("file:///tmp/example.SHTM"),
-            url("file:///tmp/example.xhtm"),
-        ]);
+        let windows = links.add(
+            [
+                url("file:///tmp/example.SHTM"),
+                url("file:///tmp/example.xhtm"),
+            ],
+            None,
+        );
         assert_eq!(windows.len(), 2);
     }
 }

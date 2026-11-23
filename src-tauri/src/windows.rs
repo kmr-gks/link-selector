@@ -481,7 +481,7 @@ Start-Sleep -Milliseconds 400
             package_family: None,
         };
         let pending = std::sync::Mutex::new(crate::PendingLinks::default());
-        pending.lock().unwrap().add([url.clone()]);
+        pending.lock().unwrap().add([url.clone()], None);
         let mut request = LaunchRequest::new(&pending, crate::MAIN_WINDOW, 1, &|| {});
         let mut child = spawn_browser(&url, &browser, &mut request).unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(60);
@@ -525,7 +525,7 @@ Start-Sleep -Milliseconds 400
         let path = "/link-selector-msix?x=1&y=2";
         let url = Url::parse(&format!("http://{}{path}", listener.local_addr().unwrap())).unwrap();
         let pending = std::sync::Mutex::new(crate::PendingLinks::default());
-        pending.lock().unwrap().add([url.clone()]);
+        pending.lock().unwrap().add([url.clone()], None);
         let mut request = LaunchRequest::new(&pending, crate::MAIN_WINDOW, 1, &|| {});
         open_packaged_browser(&url, &family, None, &mut request).unwrap();
 
