@@ -144,7 +144,12 @@ function fitPicker(list?: HTMLUListElement, growOnly?: true) {
   const contentHeight = list
     ? app.scrollHeight + list.scrollHeight - list.clientHeight
     : current ? app.scrollHeight : null;
-  void invoke("fit_picker", { contentHeight, id: current?.id, ...(growOnly && { growOnly }) }).catch(() => {
+  void invoke("fit_picker", {
+    contentHeight,
+    viewportHeight: window.innerHeight,
+    id: current?.id,
+    ...(growOnly && { growOnly }),
+  }).catch(() => {
     // The layout still allows scrolling if the OS cannot resize the window.
   });
 }
