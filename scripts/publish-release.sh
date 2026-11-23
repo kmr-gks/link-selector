@@ -37,7 +37,12 @@ fi
 
 sha256sum "${files[@]}" > SHA256SUMS.txt
 if [[ "$create_draft" == true ]]; then
-    release_flags=(--verify-tag --generate-notes --draft --notes "$marker")
+    notes_file=${3:?Provide the Japanese release notes file}
+    if [[ ! -s "$notes_file" ]] || ! grep -q '[^[:space:]]' "$notes_file"; then
+        echo "Release notes are missing or empty: $notes_file" >&2
+        exit 1
+    fi
+    release_flags=(--verify-tag --generate-notes --draft --notes "$marker"$'\n\n'"$(cat "$notes_file")")
     if [[ "$tag" == *-* ]]; then
         release_flags+=(--prerelease)
     fi

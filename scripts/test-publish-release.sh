@@ -47,10 +47,20 @@ gh() {
 }
 export -f gh
 
-RELEASE_STATE=missing bash "$publish" v1.2.3 owner/repo
+printf '## 変更点\n\n- リンクの選択画面を改善しました。\n' > notes.md
+if RELEASE_STATE=missing bash "$publish" v1.2.3 owner/repo missing.md; then
+    echo 'Publishing without versioned release notes should fail.' >&2
+    exit 1
+fi
+[[ ! -e create.log && ! -e upload.log ]]
+RELEASE_STATE=missing bash "$publish" v1.2.3 owner/repo notes.md
 [[ $(sed -n '3p' create.log) == v1.2.3 ]]
 sha256sum -c SHA256SUMS.txt
 grep -Fxq -- '--draft' create.log
+grep -Fxq -- '--generate-notes' create.log
+grep -Fxq -- '<!-- link-selector:managed-release -->' create.log
+grep -Fxq -- '## 変更点' create.log
+grep -Fxq -- '- リンクの選択画面を改善しました。' create.log
 grep -Fxq -- '--clobber' upload.log
 grep -Fxq -- '--draft=false' edit.log
 rm create.log upload.log edit.log SHA256SUMS.txt
@@ -74,7 +84,7 @@ done
 [[ ! -e create.log && ! -e SHA256SUMS.txt ]]
 
 # An interrupted upload leaves the workflow's draft. The retry fills and publishes it.
-if FAIL_UPLOAD=true RELEASE_STATE=interrupted bash "$publish" v1.2.3 owner/repo; then
+if FAIL_UPLOAD=true RELEASE_STATE=interrupted bash "$publish" v1.2.3 owner/repo notes.md; then
     echo 'A failed upload incorrectly published a release.' >&2
     exit 1
 fi

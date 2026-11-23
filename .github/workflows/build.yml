@@ -138,4 +138,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         working-directory: release
-        run: bash ../scripts/publish-release.sh "$GITHUB_REF_NAME" "$GITHUB_REPOSITORY"
+        run: |
+          bash ../scripts/publish-release.sh "$GITHUB_REF_NAME" "$GITHUB_REPOSITORY" \
+            "../release-notes/$GITHUB_REF_NAME.md"
