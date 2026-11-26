@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
 
 const [app, port] = process.argv.slice(2);
 const firstUrl = "https://example.invalid/installer-smoke?link=first";
@@ -18,7 +19,8 @@ function readPicker(target) {
         params: {
           expression: `(() => {
             const link = document.querySelector('#app.picker .link-url');
-            return link?.checkVisibility() ? link.textContent : null;
+            return link?.checkVisibility({ visibilityProperty: true, opacityProperty: true })
+              ? link.textContent : null;
           })()`,
           returnByValue: true,
         },
@@ -65,6 +67,14 @@ async function waitForPickers(process, port, matches, description) {
   throw new Error(`Timed out waiting for ${description}. Last observation: ${lastResult}`);
 }
 
+async function confirmVisibleWindows(pid, count) {
+  const script = fileURLToPath(new URL("./check-windows-picker-windows.ps1", import.meta.url));
+  const check = spawn("pwsh.exe", ["-NoProfile", "-File", script,
+    "-AppProcessId", String(pid), "-ExpectedCount", String(count)], { stdio: "inherit" });
+  const [code] = await once(check, "exit");
+  if (code !== 0) throw new Error(`Could not verify ${count} visible native picker windows`);
+}
+
 // Enable the local inspector only in the installed process launched by CI.
 const env = {
   ...process.env,
@@ -76,6 +86,7 @@ let forwarded;
 try {
   const first = await waitForPickers(original, port,
     (pickers) => pickers.find(({ url }) => url === firstUrl), "the first URL");
+  await confirmVisibleWindows(original.pid, 1);
   forwarded = spawn(app, [secondUrl], { env, stdio: "ignore" });
   const exit = once(forwarded, "exit");
   const [code] = await Promise.race([
@@ -87,7 +98,8 @@ try {
     pickers.some(({ id, url }) => id === first.id && url === firstUrl) &&
     pickers.some(({ id, url }) => id !== first.id && url === secondUrl),
   "both URLs in separate picker windows");
-  console.log("Both installer smoke-test URLs rendered in separate picker windows.");
+  await confirmVisibleWindows(original.pid, 2);
+  console.log("Both installer smoke-test URLs rendered in separate, visible native windows.");
 } finally {
   for (const process of [forwarded, original]) {
     if (process && process.exitCode === null && process.signalCode === null) {
