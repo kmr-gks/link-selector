@@ -13,8 +13,8 @@ files=(
 create_draft=false
 marker='<!-- link-selector:managed-release -->'
 
-if existing=$(gh release view "$tag" --repo "$repository" --json isDraft,body \
-    --jq '.isDraft, (.body // "")'); then
+if existing=$(LC_ALL=C gh release view "$tag" --repo "$repository" --json isDraft,body \
+    --jq '.isDraft, (.body // "")' 2>&1); then
     existing=${existing//$'\r'/}
     if [[ ${existing%%$'\n'*} == false ]]; then
         # Query names alone so lines in release notes cannot satisfy the asset check.
@@ -35,8 +35,11 @@ if existing=$(gh release view "$tag" --repo "$repository" --json isDraft,body \
         echo "Release $tag is a draft outside this workflow." >&2
         exit 1
     fi
-else
+elif [[ ${existing%$'\r'} == 'release not found' ]]; then
     create_draft=true
+else
+    printf 'Unable to check release %s: %s\n' "$tag" "$existing" >&2
+    exit 1
 fi
 
 # The prepare job uses the same asset check before downloading or building anything.

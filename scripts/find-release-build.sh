@@ -13,7 +13,13 @@ candidates=$(jq -r --arg commit "$commit" --arg repo "$repository" '
 ' <<< "$runs")
 while IFS= read -r run_id; do
     [[ -n "$run_id" ]] || continue
-    artifacts=$(gh api "repos/$repository/actions/runs/$run_id/artifacts?per_page=100")
+    if ! artifacts=$(LC_ALL=C gh api "repos/$repository/actions/runs/$run_id/artifacts?per_page=100" 2>&1); then
+        if [[ "$artifacts" == *'(HTTP 404)' ]]; then
+            continue
+        fi
+        printf 'Unable to list artifacts for build %s: %s\n' "$run_id" "$artifacts" >&2
+        exit 1
+    fi
     if jq -e '
         [.artifacts[] | select(.expired == false and .size_in_bytes > 0) | .name] as $available
         | (["installer-macos", "installer-windows-x64", "installer-windows-arm64", "macos-app"] - $available | length) == 0

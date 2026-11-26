@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-publish=$(cd "$(dirname "$0")" && pwd)/publish-release.sh
+scripts=$(cd "$(dirname "$0")" && pwd)
+publish="$scripts/publish-release.sh"
 scratch=$(mktemp -d)
 trap 'rm -rf -- "$scratch"' EXIT
 cd "$scratch"
@@ -23,7 +24,8 @@ gh() {
             fi
         fi
         case "$state" in
-            missing) return 1 ;;
+            missing) printf 'release not found\n' >&2; return 1 ;;
+            unavailable) printf 'gh: Service Unavailable (HTTP 503)\n' >&2; return 1 ;;
             published|incomplete|missing-arm64|draft|managed|starter|empty)
                 json=$(jq -n --arg mac "$macos" --arg win "$windows" --arg arm "$arm64" --arg state "$state" '
                     {isDraft: ($state == "draft" or $state == "managed"),
@@ -78,11 +80,23 @@ mkdir check-only
         RELEASE_STATE=$state bash "$publish" v1.2.3 owner/repo --check || status=$?
         [[ $status == 10 ]]
     done
-    for state in incomplete draft; do
+    for state in incomplete draft unavailable; do
         status=0
         RELEASE_STATE=$state bash "$publish" v1.2.3 owner/repo --check || status=$?
         [[ $status == 1 ]]
     done
+    # A publish-only retry runs the check with no staged files.
+    export GITHUB_REF_NAME=v1.2.3 GITHUB_REPOSITORY=owner/repo GITHUB_OUTPUT=job-output
+    RELEASE_STATE=published bash "$scripts/check-release-job.sh"
+    [[ $(cat "$GITHUB_OUTPUT") == published=true && ! -e release ]]
+    : > "$GITHUB_OUTPUT"
+    RELEASE_STATE=managed bash "$scripts/check-release-job.sh"
+    [[ $(cat "$GITHUB_OUTPUT") == published=false ]]
+    : > "$GITHUB_OUTPUT"
+    if RELEASE_STATE=unavailable bash "$scripts/check-release-job.sh"; then
+        exit 1
+    fi
+    [[ ! -s "$GITHUB_OUTPUT" ]]
     [[ ! -e create.log && ! -e upload.log && ! -e SHA256SUMS.txt ]]
 )
 RELEASE_STATE=published bash "$publish" v1.2.3 owner/repo

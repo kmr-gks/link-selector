@@ -54,7 +54,13 @@ gh() {
             ;;
     esac
     case "$2" in
-        */93/artifacts*) state=expired ;;
+        */93/artifacts*)
+            case ${FIRST_BUILD_STATE:-expired} in
+                deleted) printf 'gh: Not Found (HTTP 404)\n' >&2; return 1 ;;
+                unavailable) printf 'gh: Service Unavailable (HTTP 503)\n' >&2; return 1 ;;
+                *) state=expired ;;
+            esac
+            ;;
         */92/artifacts*) state=empty ;;
         */91/artifacts*) state=missing ;;
         */90/artifacts*) state=${FINAL_BUILD_STATE:-complete} ;;
@@ -89,3 +95,13 @@ selected=$(bash "$scripts/stage-release-build.sh" owner/repo 123 1.2.3 true "$sc
 [[ $selected == 90 && -s "$scratch/signed/macos-app/macos-app.zip" ]]
 [[ -s "$scratch/signed/installers/Link-Selector-Windows-1.2.3-arm64-setup.exe" ]]
 [[ ! -e "$scratch/signed/installers/Link-Selector-macOS-1.2.3-universal.dmg" ]]
+
+
+selected=$(FIRST_BUILD_STATE=deleted bash "$find_build" owner/repo 123)
+[[ "$selected" == 90 ]]
+selected=$(FIRST_BUILD_STATE=deleted FINAL_BUILD_STATE=missing bash "$scripts/stage-release-build.sh" owner/repo 123 1.2.3 false "$scratch/deleted")
+[[ -z "$selected" && ! -e "$scratch/deleted" ]]
+if FIRST_BUILD_STATE=unavailable bash "$find_build" owner/repo 123; then
+    echo 'A metadata service outage was incorrectly accepted.' >&2
+    exit 1
+fi
