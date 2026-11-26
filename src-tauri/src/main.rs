@@ -292,28 +292,45 @@ fn fit_picker(
     }
 
     let target = PhysicalSize::new(width, height);
+    let position = window.outer_position()?;
+    let last_x = area.position.x + (max_width - width) as i32;
+    let last_y = area.position.y + (max_height - height) as i32;
+    let target_position = PhysicalPosition::new(
+        position.x.clamp(area.position.x, last_x),
+        position.y.clamp(area.position.y, last_y),
+    );
+    let target_dimensions = dimensions(target, scale);
     if let Some(id) = id {
-        // The resize event for this first, automatic fit must not become a preference.
-        window
-            .state::<Mutex<PendingLinks>>()
+        // The automatic resize event must not become a user preference.
+        pending
             .lock()
             .unwrap()
-            .set_presented(window.label(), id, dimensions(target, scale));
+            .set_presented(window.label(), id, target_dimensions);
     }
-    if target != inner {
-        let position = window.outer_position()?;
-        let last_x = area.position.x + (max_width - width) as i32;
-        let last_y = area.position.y + (max_height - height) as i32;
-        let target_position = PhysicalPosition::new(
-            position.x.clamp(area.position.x, last_x),
-            position.y.clamp(area.position.y, last_y),
-        );
-        window.set_size(target)?;
-        if window.outer_position()? != target_position {
+    let result = (|| {
+        if target != inner {
+            window.set_size(target)?;
+        }
+        if (target != inner || position != target_position)
+            && window.outer_position()? != target_position
+        {
             window.set_position(target_position)?;
         }
+        Ok(())
+    })();
+    if result.is_err() {
+        if let Some(id) = id {
+            let actual = dimensions(window.inner_size().unwrap_or(inner), scale);
+            pending.lock().unwrap().record_fit_failure(
+                window.label(),
+                id,
+                target_dimensions,
+                actual,
+                grow_only,
+            );
+        }
     }
-    Ok(())
+    result
 }
 
 fn dimensions(size: PhysicalSize<u32>, scale: f64) -> Dimensions {

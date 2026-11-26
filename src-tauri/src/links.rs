@@ -187,6 +187,26 @@ impl PendingLinks {
         }
     }
 
+    pub fn record_fit_failure(
+        &mut self,
+        window: &str,
+        id: u64,
+        target: Dimensions,
+        actual: Dimensions,
+        grow_only: bool,
+    ) {
+        if let Some(link) = self.by_window.get_mut(window).filter(|link| {
+            link.id == id
+                && matches!(link.resize, ResizeTracking::Presented(size) if !size.differs_from(target))
+        }) {
+            link.resize = if grow_only {
+                ResizeTracking::Presented(actual)
+            } else {
+                ResizeTracking::Loading(actual)
+            };
+        }
+    }
+
     pub fn fit_padding(&mut self, window: &str, id: u64, measured: Option<f64>) -> f64 {
         let Some(link) = self.by_window.get_mut(window).filter(|link| link.id == id) else {
             return 0.0;
@@ -779,6 +799,32 @@ mod tests {
         assert!(links.show_next_deferred(None));
         assert_eq!(links.get_with_id(MAIN_WINDOW, 3).unwrap().url, third);
         assert_eq!(links.deferred_count(), 0);
+    }
+
+    #[test]
+    fn a_failed_initial_fit_can_be_retried_without_saving_it_as_a_preference() {
+        let mut links = PendingLinks::default();
+        links.add([url("https://example.com/")], None);
+        let initial = Dimensions {
+            width: 460.0,
+            height: 465.0,
+        };
+        let target = Dimensions {
+            width: 460.0,
+            height: 550.0,
+        };
+        links.track_loading_size(MAIN_WINDOW, 1, initial);
+        links.set_presented(MAIN_WINDOW, 1, target);
+        assert!(!links.can_fit(MAIN_WINDOW, Some(1), false));
+
+        links.record_fit_failure(MAIN_WINDOW, 1, target, initial, false);
+        assert!(links.can_fit(MAIN_WINDOW, Some(1), false));
+        assert!(!links.record_resize(MAIN_WINDOW, initial));
+        assert!(links.get(MAIN_WINDOW).unwrap().preferred_size.is_none());
+
+        links.set_presented(MAIN_WINDOW, 1, target);
+        assert!(!links.record_resize(MAIN_WINDOW, target));
+        assert!(!links.can_fit(MAIN_WINDOW, Some(1), false));
     }
 
     #[test]
