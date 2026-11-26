@@ -53,6 +53,7 @@ gh() {
             return
             ;;
     esac
+    if [[ ${GH_DEBUG:-} == api ]]; then printf 'debug: requesting build artifacts\n' >&2; fi
     case "$2" in
         */93/artifacts*)
             case ${FIRST_BUILD_STATE:-expired} in
@@ -97,7 +98,7 @@ selected=$(bash "$scripts/stage-release-build.sh" owner/repo 123 1.2.3 true "$sc
 [[ ! -e "$scratch/signed/installers/Link-Selector-macOS-1.2.3-universal.dmg" ]]
 
 
-selected=$(FIRST_BUILD_STATE=deleted bash "$find_build" owner/repo 123)
+selected=$(GH_DEBUG=api FIRST_BUILD_STATE=deleted bash "$find_build" owner/repo 123)
 [[ "$selected" == 90 ]]
 selected=$(FIRST_BUILD_STATE=deleted FINAL_BUILD_STATE=missing bash "$scripts/stage-release-build.sh" owner/repo 123 1.2.3 false "$scratch/deleted")
 [[ -z "$selected" && ! -e "$scratch/deleted" ]]

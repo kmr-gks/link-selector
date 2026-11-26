@@ -15,6 +15,7 @@ printf 'Windows Arm64' > "$arm64"
 
 gh() {
     if [[ $1 == release && $2 == view ]]; then
+        if [[ ${GH_DEBUG:-} == api ]]; then printf 'debug: requesting the release\n' >&2; fi
         local json
         local state=${RELEASE_STATE:-missing}
         if [[ $state == interrupted ]]; then
@@ -87,10 +88,13 @@ mkdir check-only
     done
     # A publish-only retry runs the check with no staged files.
     export GITHUB_REF_NAME=v1.2.3 GITHUB_REPOSITORY=owner/repo GITHUB_OUTPUT=job-output
-    RELEASE_STATE=published bash "$scripts/check-release-job.sh"
+    GH_DEBUG=api RELEASE_STATE=published bash "$scripts/check-release-job.sh"
     [[ $(cat "$GITHUB_OUTPUT") == published=true && ! -e release ]]
     : > "$GITHUB_OUTPUT"
-    RELEASE_STATE=managed bash "$scripts/check-release-job.sh"
+    GH_DEBUG=api RELEASE_STATE=managed bash "$scripts/check-release-job.sh"
+    [[ $(cat "$GITHUB_OUTPUT") == published=false ]]
+    : > "$GITHUB_OUTPUT"
+    GH_DEBUG=api RELEASE_STATE=missing bash "$scripts/check-release-job.sh"
     [[ $(cat "$GITHUB_OUTPUT") == published=false ]]
     : > "$GITHUB_OUTPUT"
     if RELEASE_STATE=unavailable bash "$scripts/check-release-job.sh"; then

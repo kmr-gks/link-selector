@@ -11,15 +11,19 @@ candidates=$(jq -r --arg commit "$commit" --arg repo "$repository" '
         and .status == "completed" and .conclusion == "success" and .head_repository.full_name == $repo)
     | .id
 ' <<< "$runs")
+diagnostics=$(mktemp)
+trap 'rm -f -- "$diagnostics"' EXIT
 while IFS= read -r run_id; do
     [[ -n "$run_id" ]] || continue
-    if ! artifacts=$(LC_ALL=C gh api "repos/$repository/actions/runs/$run_id/artifacts?per_page=100" 2>&1); then
-        if [[ "$artifacts" == *'(HTTP 404)' ]]; then
+    if ! artifacts=$(LC_ALL=C gh api "repos/$repository/actions/runs/$run_id/artifacts?per_page=100" 2>"$diagnostics"); then
+        if [[ $(tail -n 1 "$diagnostics" | tr -d '\r') == *'(HTTP 404)' ]]; then
             continue
         fi
-        printf 'Unable to list artifacts for build %s: %s\n' "$run_id" "$artifacts" >&2
+        printf 'Unable to list artifacts for build %s\n' "$run_id" >&2
+        cat "$diagnostics" >&2
         exit 1
     fi
+    cat "$diagnostics" >&2
     if jq -e '
         [.artifacts[] | select(.expired == false and .size_in_bytes > 0) | .name] as $available
         | (["installer-macos", "installer-windows-x64", "installer-windows-arm64", "macos-app"] - $available | length) == 0

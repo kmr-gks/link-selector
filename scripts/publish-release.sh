@@ -12,9 +12,12 @@ files=(
 
 create_draft=false
 marker='<!-- link-selector:managed-release -->'
+diagnostics=$(mktemp)
+trap 'rm -f -- "$diagnostics"' EXIT
 
 if existing=$(LC_ALL=C gh release view "$tag" --repo "$repository" --json isDraft,body \
-    --jq '.isDraft, (.body // "")' 2>&1); then
+    --jq '.isDraft, (.body // "")' 2>"$diagnostics"); then
+    cat "$diagnostics" >&2
     existing=${existing//$'\r'/}
     if [[ ${existing%%$'\n'*} == false ]]; then
         # Query names alone so lines in release notes cannot satisfy the asset check.
@@ -35,10 +38,11 @@ if existing=$(LC_ALL=C gh release view "$tag" --repo "$repository" --json isDraf
         echo "Release $tag is a draft outside this workflow." >&2
         exit 1
     fi
-elif [[ ${existing%$'\r'} == 'release not found' ]]; then
+elif [[ $(tail -n 1 "$diagnostics" | tr -d '\r') == 'release not found' ]]; then
     create_draft=true
 else
-    printf 'Unable to check release %s: %s\n' "$tag" "$existing" >&2
+    printf 'Unable to check release %s\n' "$tag" >&2
+    cat "$diagnostics" >&2
     exit 1
 fi
 
