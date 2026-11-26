@@ -17,7 +17,7 @@ const link = {
     { id: "browser-two", name: "Browser Two" },
   ],
 };
-let emitQueueChange: () => void;
+let emitQueueChange: (finishedId?: number) => void;
 let emitDeferred: (id: number, count: number) => void;
 let picker: typeof link | null;
 let failedLaunch: boolean;
@@ -31,7 +31,7 @@ describe("browser picker", () => {
     document.body.innerHTML = '<main id="app"></main>';
     vi.mocked(listen).mockImplementation(async (event, handler) => {
       if (event === "main-picker-changed") {
-        emitQueueChange = () => handler({ event, id: 1, payload: undefined });
+        emitQueueChange = (finishedId) => handler({ event, id: 1, payload: finishedId as never });
       } else if (event === "picker-deferred") {
         emitDeferred = (id, count) => handler({ event, id: 2, payload: [id, count] as never });
       }
@@ -184,6 +184,32 @@ describe("browser picker", () => {
     });
   });
 
+  it.each([false, true])("disables copying as soon as the native picker advances (launch: %s)", async (launch) => {
+    let showNext!: (view: typeof link) => void;
+    let completeLaunch!: () => void;
+    const next = new Promise<typeof link>((resolve) => { showNext = resolve; });
+    const opened = new Promise<void>((resolve) => { completeLaunch = resolve; });
+    request.mockImplementation(async (command) => {
+      if (command === "picker_state") return next as never;
+      if (command === "open_browser") {
+        emitQueueChange(7);
+        return opened as never;
+      }
+      return undefined as never;
+    });
+    if (launch) key("1");
+    else emitQueueChange(7);
+
+    const copy = document.querySelector<HTMLButtonElement>(".copy-link")!;
+    expect(copy.disabled).toBe(true);
+    copy.dispatchEvent(new MouseEvent("click"));
+    expect(request).not.toHaveBeenCalledWith("copy_link", { id: 7 });
+
+    completeLaunch();
+    showNext({ ...link, id: 8 });
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>(".copy-link")?.disabled).toBe(false));
+  });
+
   it("blocks browser choices and repeated cancellation until the cancelled picker is replaced", async () => {
     let completeCancellation!: () => void;
     const cancellation = new Promise<void>((resolve) => { completeCancellation = resolve; });
@@ -256,6 +282,9 @@ describe("browser picker", () => {
     await vi.waitFor(() => expect(document.querySelector('[role="alert"]')).not.toBeNull());
     key("1");
     expect(request).not.toHaveBeenCalledWith("open_browser", expect.anything());
+    key("Escape");
+    expect(request).toHaveBeenCalledWith("close_picker_error");
+    expect(request).not.toHaveBeenCalledWith("cancel_link", expect.anything());
     unavailable = false;
     document.querySelector<HTMLButtonElement>("button.primary")!.click();
     await vi.waitFor(() => expect(document.querySelector(".link-url")).not.toBeNull());

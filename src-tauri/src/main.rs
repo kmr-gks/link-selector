@@ -179,6 +179,15 @@ fn cancel_link(window: WebviewWindow, id: u64) {
 }
 
 #[tauri::command]
+fn close_picker_error(window: WebviewWindow) -> tauri::Result<()> {
+    if window.label() == MAIN_WINDOW {
+        window.hide()
+    } else {
+        window.close()
+    }
+}
+
+#[tauri::command]
 fn copy_link(
     window: WebviewWindow,
     state: State<'_, Mutex<PendingLinks>>,
@@ -366,19 +375,19 @@ fn finish_link(window: &WebviewWindow, id: u64) {
     save_picker_size(window.app_handle());
     if main {
         if show_next {
-            show_main_picker(window);
+            show_main_picker(window, Some(id));
         } else {
             let _ = window.hide();
-            let _ = window.emit("main-picker-changed", ());
+            let _ = window.emit("main-picker-changed", Some(id));
         }
     } else {
         let _ = window.destroy();
     }
 }
 
-fn show_main_picker(window: &WebviewWindow) {
+fn show_main_picker(window: &WebviewWindow, finished_id: Option<u64>) {
     show_window(window);
-    let _ = window.emit("main-picker-changed", ());
+    let _ = window.emit("main-picker-changed", finished_id);
 }
 
 fn recover_picker(app: &AppHandle, label: &str) {
@@ -394,7 +403,7 @@ fn recover_picker(app: &AppHandle, label: &str) {
     };
     if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
         if show_next {
-            show_main_picker(&window);
+            show_main_picker(&window, None);
         } else if let Some(waiting) = waiting {
             let _ = window.emit("picker-deferred", waiting);
         }
@@ -415,7 +424,7 @@ fn receive_links(app: &AppHandle, urls: Vec<Url>) -> bool {
     if additional.peek().is_some_and(|label| label == MAIN_WINDOW) {
         additional.next();
         if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
-            show_main_picker(&window);
+            show_main_picker(&window, None);
         }
     }
 
@@ -566,7 +575,11 @@ fn reopen(app: &AppHandle) {
         .map(|(_, window)| window)
         .or_else(|| app.get_webview_window(MAIN_WINDOW));
     if let Some(window) = active {
-        show_window(&window);
+        if window.label() == MAIN_WINDOW {
+            show_main_picker(&window, None);
+        } else {
+            show_window(&window);
+        }
     }
 }
 
@@ -625,6 +638,7 @@ fn main() {
             picker_waiting,
             open_browser,
             cancel_link,
+            close_picker_error,
             copy_link,
             open_settings,
             fit_picker,
@@ -657,21 +671,14 @@ fn main() {
                 api.prevent_close();
                 if let Some(webview) = window.app_handle().get_webview_window(window.label()) {
                     let state = window.state::<Mutex<PendingLinks>>();
-                    let (has_link, id) = {
-                        let pending = state.lock().unwrap();
-                        (
-                            pending.get(window.label()).is_some(),
-                            pending.close_request_id(window.label()),
-                        )
-                    };
+                    let id = state.lock().unwrap().close_request_id(window.label());
                     if let Some(id) = id {
                         finish_link(&webview, id);
-                    } else if !has_link {
-                        if window.label() == MAIN_WINDOW {
-                            let _ = webview.hide();
-                        } else {
-                            let _ = webview.destroy();
-                        }
+                    } else if window.label() == MAIN_WINDOW {
+                        // Closing an unrendered picker hides it without discarding its link.
+                        let _ = webview.hide();
+                    } else {
+                        let _ = webview.destroy();
                     }
                 }
             }

@@ -53,7 +53,12 @@ function showLoadError(message: string, retry: () => Promise<void>) {
     reload.disabled = true;
     void retry();
   });
-  app.replaceChildren(error, reload);
+  const close = button("閉じる", "secondary close-load-error", () => {
+    void invoke("close_picker_error").catch(() => {});
+  });
+  const actions = element("div", "actions");
+  actions.append(reload, close);
+  app.replaceChildren(error, actions);
 }
 
 async function refresh() {
@@ -286,7 +291,11 @@ async function loadIcons(id: number, placeholders: Map<string, HTMLElement>) {
 }
 
 window.addEventListener("keydown", (event) => {
-  if (!current || event.repeat || event.isComposing || event.metaKey || event.ctrlKey || event.altKey) return;
+  if (event.repeat || event.isComposing || event.metaKey || event.ctrlKey || event.altKey) return;
+  if (!current) {
+    if (event.key === "Escape") app.querySelector<HTMLButtonElement>(".close-load-error")?.click();
+    return;
+  }
   if (event.key === "Escape") {
     event.preventDefault();
     void processLink("cancel_link");
@@ -310,7 +319,11 @@ function subscribeOnce<T>(event: string, handler: EventCallback<T>, onSubscribed
     .then(onSubscribed);
 }
 
-const subscribeToPickerChanges = subscribeOnce("main-picker-changed", () => {
+const subscribeToPickerChanges = subscribeOnce<number | null>("main-picker-changed", ({ payload: finishedId }) => {
+  if (current && current.id === finishedId) {
+    closingLinkId = finishedId;
+    updatePickerActions(finishedId);
+  }
   if (listenersReady) void refresh();
 });
 type Waiting = [id: number, count: number];
