@@ -8,6 +8,13 @@ use tauri::Url;
 
 pub const MAIN_WINDOW: &str = "main";
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum PickerClose {
+    Finish(u64),
+    Hide,
+    Destroy,
+}
+
 pub struct StartupLinks(Option<Vec<Url>>);
 
 impl Default for StartupLinks {
@@ -118,9 +125,14 @@ impl PendingLinks {
         }
     }
 
-    pub fn close_request_id(&self, window: &str) -> Option<u64> {
-        let id = self.get(window)?.id;
-        (window != MAIN_WINDOW || self.rendered_main_id == Some(id)).then_some(id)
+    pub fn close_request(&self, window: &str) -> PickerClose {
+        match self.get(window) {
+            Some(link) if window != MAIN_WINDOW || self.rendered_main_id == Some(link.id) => {
+                PickerClose::Finish(link.id)
+            }
+            _ if window == MAIN_WINDOW => PickerClose::Hide,
+            _ => PickerClose::Destroy,
+        }
     }
 
     pub fn can_fit(&self, window: &str, id: Option<u64>, grow_only: bool) -> bool {
@@ -751,17 +763,19 @@ mod tests {
         let mut links = PendingLinks::default();
         let address = url("https://example.com/");
         links.add([address.clone(), address], None);
-        assert_eq!(links.close_request_id("picker-2"), Some(2));
+        assert_eq!(links.close_request("picker-2"), PickerClose::Finish(2));
+        assert_eq!(links.close_request(MAIN_WINDOW), PickerClose::Hide);
+        assert_eq!(links.get(MAIN_WINDOW).unwrap().id, 1);
         assert!(!links.defer("picker-2", None));
         links.confirm_main_render(1);
-        let id = links.close_request_id(MAIN_WINDOW).unwrap();
-        links.finish(MAIN_WINDOW, id).unwrap();
+        assert_eq!(links.close_request(MAIN_WINDOW), PickerClose::Finish(1));
+        links.finish(MAIN_WINDOW, 1).unwrap();
         assert!(links.show_next_deferred(None));
         links.confirm_main_render(1);
-        assert_eq!(links.close_request_id(MAIN_WINDOW), None);
+        assert_eq!(links.close_request(MAIN_WINDOW), PickerClose::Hide);
         assert_eq!(links.get(MAIN_WINDOW).unwrap().id, 2);
         links.confirm_main_render(2);
-        assert_eq!(links.close_request_id(MAIN_WINDOW), Some(2));
+        assert_eq!(links.close_request(MAIN_WINDOW), PickerClose::Finish(2));
     }
 
     #[test]

@@ -12,7 +12,7 @@ mod platform;
 #[path = "windows.rs"]
 mod platform;
 
-use links::{LaunchError, LaunchRequest, PendingLinks, MAIN_WINDOW};
+use links::{LaunchError, LaunchRequest, PendingLinks, PickerClose, MAIN_WINDOW};
 use picker_size::{Dimensions, PickerSize};
 use serde::Serialize;
 use std::sync::Mutex;
@@ -671,14 +671,16 @@ fn main() {
                 api.prevent_close();
                 if let Some(webview) = window.app_handle().get_webview_window(window.label()) {
                     let state = window.state::<Mutex<PendingLinks>>();
-                    let id = state.lock().unwrap().close_request_id(window.label());
-                    if let Some(id) = id {
-                        finish_link(&webview, id);
-                    } else if window.label() == MAIN_WINDOW {
-                        // Closing an unrendered picker hides it without discarding its link.
-                        let _ = webview.hide();
-                    } else {
-                        let _ = webview.destroy();
+                    let action = state.lock().unwrap().close_request(window.label());
+                    match action {
+                        PickerClose::Finish(id) => finish_link(&webview, id),
+                        PickerClose::Hide => {
+                            // Closing an unrendered picker hides it without discarding its link.
+                            let _ = webview.hide();
+                        }
+                        PickerClose::Destroy => {
+                            let _ = webview.destroy();
+                        }
                     }
                 }
             }
