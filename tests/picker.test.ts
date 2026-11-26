@@ -17,7 +17,7 @@ const link = {
     { id: "browser-two", name: "Browser Two" },
   ],
 };
-let emitQueueChange: (finishedId?: number) => void;
+let emitQueueChange: (finishedId?: number | null) => void;
 let emitDeferred: (id: number, count: number) => void;
 let picker: typeof link | null;
 let failedLaunch: boolean;
@@ -308,6 +308,7 @@ describe("browser picker", () => {
       if (command === "picker_icons") return pendingIcons as never;
       return undefined as never;
     });
+    picker = { ...link, browsers: [{ id: "browser-one", name: "Browser One" }] };
     emitQueueChange();
     await vi.waitFor(() => expect(request).toHaveBeenCalledWith("picker_icons", { id: 7 }));
     expect(document.querySelector(".browser-icon")).toBeInstanceOf(HTMLSpanElement);
@@ -328,6 +329,26 @@ describe("browser picker", () => {
       expect(region?.textContent).toBe(url);
       expect(region?.tabIndex).toBe(0);
     });
+  });
+
+  it("preserves URL scroll and focus when the same picker is brought forward", async () => {
+    const url = `https://example.com/${"a".repeat(3000)}`;
+    picker = { ...link, url };
+    emitQueueChange();
+    await vi.waitFor(() => expect(document.querySelector(".link-url")?.textContent).toBe(url));
+    const region = document.querySelector<HTMLElement>(".link-url")!;
+    region.focus();
+    region.scrollTop = 160;
+
+    picker = { ...picker, waiting: 1 };
+    emitQueueChange(null);
+    await vi.waitFor(() => expect(document.querySelector(".waiting")?.textContent).toContain("1 件"));
+    expect(document.activeElement).toBe(region);
+    expect(region.scrollTop).toBe(160);
+
+    picker = { ...picker, browsers: [{ id: "replacement", name: "Replacement Browser" }] };
+    emitQueueChange(null);
+    await vi.waitFor(() => expect(document.querySelector(".browser-name")?.textContent).toBe("Replacement Browser"));
   });
 
   it("requests more height when a later notice reduces the list viewport", () => {
@@ -355,6 +376,7 @@ describe("browser picker", () => {
     const clientHeight = vi.spyOn(HTMLElement.prototype, "clientHeight", "get")
       .mockReturnValue(300);
     try {
+      picker = { ...link, browsers: [...link.browsers, { id: "third", name: "Third Browser" }] };
       emitQueueChange();
       await vi.waitFor(() => expect(request).toHaveBeenCalledWith("fit_picker", { contentHeight: 621, viewportHeight: window.innerHeight, id: 7 }));
     } finally {
@@ -531,6 +553,23 @@ describe("main picker initialization", () => {
     await vi.waitFor(() => expect(document.querySelector(".waiting")?.textContent).toContain("1 件"));
     expect(request.mock.calls.filter(([command]) => command === "picker_waiting")).toEqual([["picker_waiting"]]);
     expect(document.querySelector("button.browser")).toBe(originalButton);
+    expect(request.mock.calls.filter(([command]) => command === "picker_state")).toEqual([["picker_state"]]);
+  });
+
+  it.each(["focus", "timer"])("recovers initial subscriptions through %s without a manual reload", async (trigger) => {
+    failEvent = queueChanged;
+    failuresRemaining = 2;
+    await import("../src/main");
+    await vi.waitFor(() => expect(document.querySelector('[role="alert"]')?.textContent).toContain("初期化できません"));
+    document.querySelector<HTMLButtonElement>(".close-load-error")!.click();
+    expect(request).toHaveBeenCalledWith("close_picker_error");
+
+    if (trigger === "focus") window.dispatchEvent(new Event("focus"));
+    else await vi.advanceTimersByTimeAsync(250);
+    await vi.waitFor(() => expect(document.querySelector(".link-url")?.textContent).toBe(link.url));
+    await vi.advanceTimersByTimeAsync(4000);
+
+    expect(subscribe.mock.calls.filter(([name]) => name === queueChanged)).toHaveLength(3);
     expect(request.mock.calls.filter(([command]) => command === "picker_state")).toEqual([["picker_state"]]);
   });
 

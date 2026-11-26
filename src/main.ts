@@ -26,6 +26,8 @@ let statusMessage = "";
 let closingLinkId: number | undefined;
 let deferredDuringRefresh: Map<number, number> | undefined;
 let listenersReady = false;
+let initializing = false;
+let initializationTimeout: number | undefined;
 
 function element<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -51,7 +53,9 @@ function showLoadError(message: string, retry: () => Promise<void>) {
   error.setAttribute("role", "alert");
   const reload = button("再読み込み", "primary", () => {
     reload.disabled = true;
-    void retry();
+    void retry().finally(() => {
+      reload.disabled = false;
+    });
   });
   const close = button("閉じる", "secondary close-load-error", () => {
     void invoke("close_picker_error").catch(() => {});
@@ -73,6 +77,14 @@ async function refresh() {
     if (request !== requestNumber) return;
     if (view) {
       view.waiting = Math.max(view.waiting, notifications.get(view.id) ?? 0);
+    }
+    const previous = current;
+    if (view && previous && previous.id === view.id && previous.url === view.url &&
+      previous.browsers.length === view.browsers.length &&
+      view.browsers.every((browser, index) => browser.id === previous.browsers[index].id &&
+        browser.name === previous.browsers[index].name)) {
+      updateWaiting([view.id, view.waiting]);
+      return;
     }
     if (view?.id !== closingLinkId) closingLinkId = undefined;
     if (view?.id !== current?.id) statusMessage = "";
@@ -358,12 +370,22 @@ function recoverDeferredSubscription(delay = 250) {
   });
 }
 
-async function initializePicker() {
+async function initializePicker(delay = 250) {
+  if (listenersReady || initializing) return;
+  window.clearTimeout(initializationTimeout);
+  initializing = true;
   try {
     await subscribeToPickerChanges();
   } catch {
-    showLoadError("選択画面を初期化できませんでした。", initializePicker);
+    if (!app.querySelector(".close-load-error")) {
+      showLoadError("選択画面を初期化できませんでした。", initializePicker);
+    }
+    initializationTimeout = window.setTimeout(() => {
+      void initializePicker(Math.min(delay * 2, 4000));
+    }, delay);
     return;
+  } finally {
+    initializing = false;
   }
   listenersReady = true;
   await refresh();
@@ -372,6 +394,9 @@ async function initializePicker() {
 if (isMainWindow) {
   render();
   recoverDeferredSubscription();
+  window.addEventListener("focus", () => {
+    if (!listenersReady) void initializePicker();
+  });
   void initializePicker();
 } else {
   const status = element("p", "status");
