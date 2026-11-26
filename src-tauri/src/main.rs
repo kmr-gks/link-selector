@@ -12,7 +12,7 @@ mod platform;
 #[path = "windows.rs"]
 mod platform;
 
-use links::{LaunchError, LaunchRequest, PendingLinks, PickerClose, MAIN_WINDOW};
+use links::{LaunchError, LaunchRequest, PendingLinks, PickerClose, PickerRecovery, MAIN_WINDOW};
 use picker_size::{Dimensions, PickerSize};
 use serde::Serialize;
 use std::sync::Mutex;
@@ -393,19 +393,21 @@ fn show_main_picker(window: &WebviewWindow, finished_id: Option<u64>) {
 fn recover_picker(app: &AppHandle, label: &str) {
     let pending = app.state::<Mutex<PendingLinks>>();
     let preferred = app.state::<Mutex<PickerSize>>().lock().unwrap().preferred;
-    let (show_next, waiting) = {
-        let mut pending = pending.lock().unwrap();
-        let show_next = pending.defer(label, preferred);
-        let waiting = pending
-            .get(MAIN_WINDOW)
-            .map(|link| (link.id, pending.deferred_count()));
-        (show_next, waiting)
-    };
-    if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
-        if show_next {
-            show_main_picker(&window, None);
-        } else if let Some(waiting) = waiting {
-            let _ = window.emit("picker-deferred", waiting);
+    let window = app.get_webview_window(MAIN_WINDOW);
+    let main_hidden = window
+        .as_ref()
+        .is_some_and(|window| matches!(window.is_visible(), Ok(false)));
+    let recovery = pending
+        .lock()
+        .unwrap()
+        .recover_window(label, preferred, main_hidden);
+    if let Some(window) = window {
+        match recovery {
+            PickerRecovery::ShowMain => show_main_picker(&window, None),
+            PickerRecovery::UpdateWaiting(id, count) => {
+                let _ = window.emit("picker-deferred", (id, count));
+            }
+            PickerRecovery::Ignore => {}
         }
     }
 }

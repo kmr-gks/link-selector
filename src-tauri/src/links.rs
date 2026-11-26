@@ -15,6 +15,13 @@ pub enum PickerClose {
     Destroy,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum PickerRecovery {
+    ShowMain,
+    UpdateWaiting(u64, usize),
+    Ignore,
+}
+
 pub struct StartupLinks(Option<Vec<Url>>);
 
 impl Default for StartupLinks {
@@ -234,6 +241,22 @@ impl PendingLinks {
 
     pub fn remove(&mut self, window: &str) -> Option<Link> {
         self.by_window.remove(window)
+    }
+
+    pub fn recover_window(
+        &mut self,
+        window: &str,
+        preferred_size: Option<Dimensions>,
+        main_hidden: bool,
+    ) -> PickerRecovery {
+        let promoted = self.defer(window, preferred_size);
+        match self.get(MAIN_WINDOW) {
+            Some(_) if promoted || (main_hidden && self.deferred_count() > 0) => {
+                PickerRecovery::ShowMain
+            }
+            Some(link) => PickerRecovery::UpdateWaiting(link.id, self.deferred_count()),
+            None => PickerRecovery::Ignore,
+        }
     }
 
     pub fn defer(&mut self, window: &str, preferred_size: Option<Dimensions>) -> bool {
@@ -756,6 +779,30 @@ mod tests {
         assert!(links.show_next_deferred(None));
         assert_eq!(links.get_with_id(MAIN_WINDOW, 3).unwrap().url, third);
         assert_eq!(links.deferred_count(), 0);
+    }
+
+    #[test]
+    fn recovers_failed_windows_even_when_the_occupied_main_picker_is_hidden() {
+        let mut links = PendingLinks::default();
+        let first = url("https://example.com/first");
+        let second = url("https://example.com/second");
+        let third = url("https://example.com/third");
+        links.add([first.clone(), second.clone(), third], None);
+        assert_eq!(links.close_request(MAIN_WINDOW), PickerClose::Hide);
+
+        assert_eq!(
+            links.recover_window("picker-2", None, true),
+            PickerRecovery::ShowMain
+        );
+        assert_eq!(links.get(MAIN_WINDOW).unwrap().url, first);
+        assert_eq!(
+            links.recover_window("picker-3", None, false),
+            PickerRecovery::UpdateWaiting(1, 2)
+        );
+
+        links.finish(MAIN_WINDOW, 1).unwrap();
+        assert!(links.show_next_deferred(None));
+        assert_eq!(links.get(MAIN_WINDOW).unwrap().url, second);
     }
 
     #[test]
