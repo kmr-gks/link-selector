@@ -28,6 +28,11 @@ let deferredDuringRefresh: Map<number, number> | undefined;
 let listenersReady = false;
 let initializing = false;
 let initializationTimeout: number | undefined;
+let pickerEffects: {
+  fit: ReturnType<typeof retryable>;
+  grow: ReturnType<typeof retryable>;
+  icons?: ReturnType<typeof retryable>;
+} | undefined;
 
 function element<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -48,6 +53,7 @@ function button(label: string, className: string, action: () => void) {
 }
 
 function showLoadError(message: string, retry: () => Promise<void>) {
+  pickerEffects = undefined;
   app.classList.remove("picker");
   const error = element("p", "instructions", message);
   error.setAttribute("role", "alert");
@@ -84,6 +90,9 @@ async function refresh() {
       view.browsers.every((browser, index) => browser.id === previous.browsers[index].id &&
         browser.name === previous.browsers[index].name)) {
       updateWaiting([view.id, view.waiting]);
+      pickerEffects?.fit.retry();
+      pickerEffects?.grow.retry();
+      pickerEffects?.icons?.retry();
       return;
     }
     if (view?.id !== closingLinkId) closingLinkId = undefined;
@@ -163,9 +172,7 @@ function updatePickerMessage(selector: string, message: string) {
   const element = app.querySelector(selector);
   if (!element || element.textContent === message) return;
   element.textContent = message;
-  if (current) {
-    fitPicker(app.querySelector<HTMLUListElement>(".browsers") ?? undefined, true);
-  }
+  pickerEffects?.grow.run();
 }
 
 function waitingMessage(waiting: number) {
@@ -193,22 +200,34 @@ function heading(title: string, description: string, isLink = false) {
   return header;
 }
 
+function retryable(action: () => Promise<unknown>) {
+  let attempt = 0;
+  let failed = false;
+  function run() {
+    const request = ++attempt;
+    failed = false;
+    void action().catch(() => {
+      if (request === attempt) failed = true;
+    });
+  }
+  return { run, retry: () => { if (failed) run(); } };
+}
+
 function fitPicker(list?: HTMLUListElement, growOnly?: true) {
   // A scrollable list's hidden rows do not contribute to the main element's height.
   const contentHeight = list
     ? app.scrollHeight + list.scrollHeight - list.clientHeight
     : current ? app.scrollHeight : null;
-  void invoke("fit_picker", {
+  return invoke("fit_picker", {
     contentHeight,
     viewportHeight: window.innerHeight,
     id: current?.id,
     ...(growOnly && { growOnly }),
-  }).catch(() => {
-    // The layout still allows scrolling if the OS cannot resize the window.
   });
 }
 
 function render() {
+  pickerEffects = undefined;
   const wasPicker = app.classList.contains("picker");
   app.classList.toggle("picker", current !== null);
   const status = element("p", "status");
@@ -227,7 +246,7 @@ function render() {
       button("システム設定を開く", "primary", openSettings),
       status,
     );
-    if (wasPicker) fitPicker();
+    if (wasPicker) void fitPicker().catch(() => {});
     return;
   }
 
@@ -270,11 +289,18 @@ function render() {
     footer,
   );
   if (isMainWindow) acknowledgePicker(id);
-  fitPicker(browsers.length ? list : undefined);
-  if (!isWindows && icons.size > 0) {
+  const browserList = browsers.length ? list : undefined;
+  const effects = {
+    fit: retryable(() => fitPicker(browserList)),
+    grow: retryable(() => fitPicker(browserList, true)),
+    icons: !isWindows && icons.size ? retryable(() => loadIcons(id, icons)) : undefined,
+  };
+  pickerEffects = effects;
+  effects.fit.run();
+  if (effects.icons) {
     // Allow a paint with the browser names and buttons before decoding icons.
     requestAnimationFrame(() => requestAnimationFrame(() => {
-      if (current?.id === id) void loadIcons(id, icons);
+      if (pickerEffects === effects) effects.icons?.run();
     }));
   }
 }
@@ -287,18 +313,14 @@ function acknowledgePicker(id: number, delay = 250) {
 }
 
 async function loadIcons(id: number, placeholders: Map<string, HTMLElement>) {
-  try {
-    const icons = await invoke<Record<string, string>>("picker_icons", { id });
-    for (const [browserId, source] of Object.entries(icons)) {
-      const placeholder = placeholders.get(browserId);
-      if (!placeholder?.isConnected) continue;
-      const icon = element("img", "browser-icon");
-      icon.src = source;
-      icon.alt = "";
-      placeholder.replaceWith(icon);
-    }
-  } catch {
-    // Keep the placeholder if native icon loading fails.
+  const icons = await invoke<Record<string, string>>("picker_icons", { id });
+  for (const [browserId, source] of Object.entries(icons)) {
+    const placeholder = placeholders.get(browserId);
+    if (!placeholder?.isConnected) continue;
+    const icon = element("img", "browser-icon");
+    icon.src = source;
+    icon.alt = "";
+    placeholder.replaceWith(icon);
   }
 }
 

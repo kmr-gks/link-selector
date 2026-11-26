@@ -351,6 +351,71 @@ describe("browser picker", () => {
     await vi.waitFor(() => expect(document.querySelector(".browser-name")?.textContent).toBe("Replacement Browser"));
   });
 
+  it.each([
+    { failFit: true, failIcons: true },
+    { failFit: true, failIcons: false },
+    { failFit: false, failIcons: true },
+  ])("retries only failed native effects on reopen ($failFit, $failIcons)", async ({ failFit, failIcons }) => {
+    picker = { ...link, id: 70, url: `https://example.com/${"a".repeat(3000)}` };
+    let fitAttempts = 0;
+    let iconAttempts = 0;
+    request.mockImplementation(async (command, args) => {
+      if (command === "picker_state") return picker as never;
+      if (command === "fit_picker" && (args as { id: number }).id === 70) {
+        if (++fitAttempts === 1 && failFit) throw new Error("resize unavailable");
+      }
+      if (command === "picker_icons" && (args as { id: number }).id === 70) {
+        if (++iconAttempts === 1 && failIcons) throw new Error("icons unavailable");
+        return { "browser-one": "data:image/png;base64,iVBORw0KGgo=" } as never;
+      }
+      return undefined as never;
+    });
+    emitQueueChange();
+    await vi.waitFor(() => expect(iconAttempts).toBe(1));
+    expect(fitAttempts).toBe(1);
+    const region = document.querySelector<HTMLElement>(".link-url")!;
+    const browserList = document.querySelector<HTMLElement>(".browsers")!;
+    region.focus();
+    region.scrollTop = 120;
+    browserList.scrollTop = 30;
+
+    emitQueueChange(null);
+    await vi.waitFor(() => {
+      expect(fitAttempts).toBe(failFit ? 2 : 1);
+      expect(iconAttempts).toBe(failIcons ? 2 : 1);
+      expect(document.querySelector("img.browser-icon")).not.toBeNull();
+    });
+    expect(document.activeElement).toBe(region);
+    expect(region.scrollTop).toBe(120);
+    expect(browserList.scrollTop).toBe(30);
+
+    picker.waiting = 1;
+    emitQueueChange(null);
+    await vi.waitFor(() => expect(document.querySelector(".waiting")?.textContent).toContain("1 件"));
+    // A changed waiting count can request a grow-only fit, but a successful initial fit and icons stay cached.
+    expect(request.mock.calls.filter(([command, args]) =>
+      command === "fit_picker" && (args as { id: number; growOnly?: boolean }).id === 70 &&
+      !(args as { growOnly?: boolean }).growOnly)).toHaveLength(failFit ? 2 : 1);
+    expect(iconAttempts).toBe(failIcons ? 2 : 1);
+  });
+
+  it("retries a failed fit for a waiting notice without re-rendering the picker", async () => {
+    let growthAttempts = 0;
+    request.mockImplementation(async (command, args) => {
+      if (command === "picker_state") return { ...link, waiting: 1 } as never;
+      if (command === "fit_picker" && (args as { growOnly?: boolean }).growOnly) {
+        if (++growthAttempts === 1) throw new Error("resize unavailable");
+      }
+      return undefined as never;
+    });
+    const region = document.querySelector(".link-url");
+    emitDeferred(7, 1);
+    await vi.waitFor(() => expect(growthAttempts).toBe(1));
+    emitQueueChange(null);
+    await vi.waitFor(() => expect(growthAttempts).toBe(2));
+    expect(document.querySelector(".link-url")).toBe(region);
+  });
+
   it("requests more height when a later notice reduces the list viewport", () => {
     const scrollHeight = vi.spyOn(HTMLElement.prototype, "scrollHeight", "get")
       .mockImplementation(function (this: HTMLElement) {
