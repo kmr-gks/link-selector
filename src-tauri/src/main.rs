@@ -306,10 +306,18 @@ fn fit_picker(
         let position = window.outer_position()?;
         let last_x = area.position.x + (max_width - width) as i32;
         let last_y = area.position.y + (max_height - height) as i32;
-        Some(PhysicalPosition::new(
-            position.x.clamp(area.position.x, last_x),
-            position.y.clamp(area.position.y, last_y),
-        ))
+        let mut pending = pending.lock().unwrap();
+        // A move may already have happened even if its event is still queued.
+        pending.record_move(window.label(), position);
+        pending
+            .fit_needs_position(window.label(), id, size_changed)
+            .then(|| {
+                let target_position = PhysicalPosition::new(
+                    position.x.clamp(area.position.x, last_x),
+                    position.y.clamp(area.position.y, last_y),
+                );
+                (position, target_position)
+            })
     } else {
         None
     };
@@ -321,14 +329,16 @@ fn fit_picker(
             .unwrap()
             .set_presented(window.label(), id, target_dimensions);
     }
-    let mut position_pending = false;
+    let mut position_pending = None;
     let result = (|| {
         if size_changed {
             window.set_size(target)?;
         }
-        if let Some(target_position) = target_position {
-            position_pending = true;
-            if window.outer_position()? != target_position {
+        if let Some((before_resize, target_position)) = target_position {
+            position_pending = Some(before_resize);
+            let position = window.outer_position()?;
+            position_pending = Some(position);
+            if position != target_position {
                 window.set_position(target_position)?;
             }
         }
@@ -337,6 +347,8 @@ fn fit_picker(
     if result.is_err() {
         if let Some(id) = id {
             let actual = dimensions(window.inner_size().unwrap_or(inner), scale);
+            let position_pending =
+                position_pending.map(|position| window.outer_position().unwrap_or(position));
             pending.lock().unwrap().record_fit_failure(
                 window.label(),
                 id,
@@ -680,6 +692,17 @@ fn main() {
             fit_picker,
         ])
         .on_window_event(|window, event| match event {
+            WindowEvent::Moved(position) => {
+                if window.is_visible().unwrap_or(false)
+                    && window.outer_position().ok() == Some(*position)
+                {
+                    window
+                        .state::<Mutex<PendingLinks>>()
+                        .lock()
+                        .unwrap()
+                        .record_move(window.label(), *position);
+                }
+            }
             WindowEvent::Resized(size) => {
                 if window.try_state::<Mutex<PickerSize>>().is_some() {
                     record_picker_resize(window, *size);

@@ -4,7 +4,7 @@ use std::{
     io,
     sync::Mutex,
 };
-use tauri::Url;
+use tauri::{PhysicalPosition, Url};
 
 pub const MAIN_WINDOW: &str = "main";
 
@@ -63,7 +63,7 @@ pub struct Link {
     pub preferred_size: Option<Dimensions>,
     resize: ResizeTracking,
     fit_padding: Option<f64>,
-    fit_position_pending: bool,
+    fit_position_pending: Option<PhysicalPosition<i32>>,
     pub slot: usize,
     launch: LaunchState,
 }
@@ -110,7 +110,7 @@ impl PendingLinks {
                     preferred_size,
                     resize: ResizeTracking::NotShown,
                     fit_padding: None,
-                    fit_position_pending: false,
+                    fit_position_pending: None,
                     slot,
                     launch: LaunchState::Idle,
                 },
@@ -187,13 +187,24 @@ impl PendingLinks {
         size_changed
             || id
                 .and_then(|id| self.get_with_id(window, id))
-                .is_some_and(|link| link.fit_position_pending)
+                .is_some_and(|link| link.fit_position_pending.is_some())
+    }
+
+    pub fn record_move(&mut self, window: &str, position: PhysicalPosition<i32>) {
+        if let Some(link) = self.by_window.get_mut(window) {
+            if link
+                .fit_position_pending
+                .is_some_and(|pending| pending != position)
+            {
+                link.fit_position_pending = None;
+            }
+        }
     }
 
     pub fn set_presented(&mut self, window: &str, id: u64, size: Dimensions) {
         if let Some(link) = self.by_window.get_mut(window).filter(|link| link.id == id) {
             link.resize = ResizeTracking::Presented(size);
-            link.fit_position_pending = false;
+            link.fit_position_pending = None;
         }
     }
 
@@ -204,7 +215,7 @@ impl PendingLinks {
         target: Dimensions,
         actual: Dimensions,
         grow_only: bool,
-        position_pending: bool,
+        position_pending: Option<PhysicalPosition<i32>>,
     ) {
         if let Some(link) = self.by_window.get_mut(window).filter(|link| {
             link.id == id
@@ -253,7 +264,7 @@ impl PendingLinks {
                     return false;
                 }
                 link.resize = ResizeTracking::Presented(size);
-                link.fit_position_pending = false;
+                link.fit_position_pending = None;
                 link.preferred_size = Some(size);
                 true
             }
@@ -311,7 +322,7 @@ impl PendingLinks {
         link.preferred_size = preferred_size;
         link.resize = ResizeTracking::NotShown;
         link.fit_padding = None;
-        link.fit_position_pending = false;
+        link.fit_position_pending = None;
         self.by_window.insert(MAIN_WINDOW.to_owned(), link);
         true
     }
@@ -830,17 +841,57 @@ mod tests {
         assert!(!links.fit_needs_position(MAIN_WINDOW, None, false));
 
         links.set_presented(MAIN_WINDOW, 1, size);
-        links.record_fit_failure(MAIN_WINDOW, 1, size, size, false, true);
+        links.record_fit_failure(
+            MAIN_WINDOW,
+            1,
+            size,
+            size,
+            false,
+            Some(PhysicalPosition::new(0, 0)),
+        );
         assert!(links.can_fit(MAIN_WINDOW, Some(1), false));
         assert!(links.fit_needs_position(MAIN_WINDOW, Some(1), false));
 
         links.set_presented(MAIN_WINDOW, 1, size);
         assert!(!links.fit_needs_position(MAIN_WINDOW, Some(1), false));
 
-        links.record_fit_failure(MAIN_WINDOW, 1, size, size, true, true);
+        links.record_fit_failure(
+            MAIN_WINDOW,
+            1,
+            size,
+            size,
+            true,
+            Some(PhysicalPosition::new(0, 0)),
+        );
         links.finish(MAIN_WINDOW, 1).unwrap();
         links.add([address], None);
         assert!(!links.fit_needs_position(MAIN_WINDOW, Some(2), false));
+    }
+
+    #[test]
+    fn moving_the_picker_cancels_only_the_pending_position_retry() {
+        let mut links = PendingLinks::default();
+        let address = url("https://example.com/");
+        links.add([address.clone(), address], None);
+        let size = Dimensions {
+            width: 460.0,
+            height: 550.0,
+        };
+        let position = PhysicalPosition::new(100, 200);
+        for (window, id) in [(MAIN_WINDOW, 1), ("picker-2", 2)] {
+            links.set_presented(window, id, size);
+            links.record_fit_failure(window, id, size, size, true, Some(position));
+        }
+
+        // A delayed move notification for the position already observed after failure is harmless.
+        links.record_move(MAIN_WINDOW, position);
+        assert!(links.fit_needs_position(MAIN_WINDOW, Some(1), false));
+
+        links.record_move(MAIN_WINDOW, PhysicalPosition::new(130, 200));
+        links.record_move(MAIN_WINDOW, position);
+        assert!(!links.fit_needs_position(MAIN_WINDOW, Some(1), false));
+        assert!(links.fit_needs_position(MAIN_WINDOW, Some(1), true));
+        assert!(links.fit_needs_position("picker-2", Some(2), false));
     }
 
     #[test]
@@ -859,7 +910,7 @@ mod tests {
         links.set_presented(MAIN_WINDOW, 1, target);
         assert!(!links.can_fit(MAIN_WINDOW, Some(1), false));
 
-        links.record_fit_failure(MAIN_WINDOW, 1, target, initial, false, false);
+        links.record_fit_failure(MAIN_WINDOW, 1, target, initial, false, None);
         assert!(links.can_fit(MAIN_WINDOW, Some(1), false));
         assert!(!links.record_resize(MAIN_WINDOW, initial));
         assert!(links.get(MAIN_WINDOW).unwrap().preferred_size.is_none());
