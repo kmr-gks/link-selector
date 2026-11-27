@@ -243,15 +243,11 @@ impl PendingLinks {
     }
 
     pub fn track_restored_size(&mut self, window: &str, id: u64) {
-        if let Some(link) = self
-            .by_window
-            .get_mut(window)
-            .filter(|link| {
-                link.id == id
-                    && link.fit_position_pending.is_none()
-                    && !matches!(link.resize, ResizeTracking::Presented(_))
-            })
-        {
+        if let Some(link) = self.by_window.get_mut(window).filter(|link| {
+            link.id == id
+                && link.fit_position_pending.is_none()
+                && !matches!(link.resize, ResizeTracking::Presented(_))
+        }) {
             link.resize = ResizeTracking::AwaitingNormalSize;
         }
     }
