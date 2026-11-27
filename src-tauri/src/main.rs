@@ -293,10 +293,11 @@ fn fit_picker(
 
     let target = PhysicalSize::new(width, height);
     let size_changed = target != inner;
-    let adjust_position = pending
-        .lock()
-        .unwrap()
-        .fit_needs_position(window.label(), id, size_changed);
+    let adjust_position =
+        pending
+            .lock()
+            .unwrap()
+            .fit_needs_position(window.label(), id, size_changed);
     if grow_only && height <= inner.height && (size_changed || !adjust_position) {
         return Ok(());
     }
