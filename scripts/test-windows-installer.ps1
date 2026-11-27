@@ -4,6 +4,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'windows-webview2-policy.ps1')
 $directory = Join-Path $env:RUNNER_TEMP 'link-selector-test'
 $app = Join-Path $directory 'link-selector.exe'
 $uninstaller = Join-Path $directory 'uninstall.exe'
@@ -46,33 +47,20 @@ function Confirm-PickerUrls {
     $name = [System.IO.Path]::GetFileName($app)
     # WebView2 ignores environment overrides for elevated hosts starting with Runtime 150.
     # https://github.com/MicrosoftEdge/WebView2Feedback/issues/5645
-    $policyKey = $null
-    $policySet = $false
-    try {
-        if ($elevated) {
-            $policyKey = [Microsoft.Win32.Registry]::LocalMachine.CreateSubKey($policy)
-            $previous = $policyKey.GetValue($name)
-            if ($null -ne $previous) { $previousKind = $policyKey.GetValueKind($name) }
-            $policyKey.SetValue($name, "--remote-debugging-address=127.0.0.1 --remote-debugging-port=$port",
-                [Microsoft.Win32.RegistryValueKind]::String)
-            $policySet = $true
-        }
+    $check = {
         node (Join-Path $PSScriptRoot "check-windows-picker.mjs") $app $port
         if ($LASTEXITCODE -ne 0) { throw 'The installed app did not render both picker URLs' }
-    } finally {
-        if ($policyKey) {
-            try {
-                if ($policySet) {
-                    if ($null -eq $previous) {
-                        $policyKey.DeleteValue($name)
-                    } else {
-                        $policyKey.SetValue($name, $previous, $previousKind)
-                    }
-                }
-            } finally {
-                $policyKey.Dispose()
-            }
+    }
+
+    if ($elevated) {
+        $policyKey = [Microsoft.Win32.Registry]::LocalMachine.CreateSubKey($policy)
+        try {
+            Invoke-WithWebView2Arguments $policyKey $name "--remote-debugging-address=127.0.0.1 --remote-debugging-port=$port" $check
+        } finally {
+            $policyKey.Dispose()
         }
+    } else {
+        & $check
     }
 }
 

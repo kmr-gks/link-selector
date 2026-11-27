@@ -116,6 +116,10 @@ jobs:
             target_args=(--target "$RUST_TARGET")
           fi
           cargo +stable test --manifest-path src-tauri/Cargo.toml --locked "${target_args[@]}"
+      - name: Test WebView2 policy restoration
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/test-windows-webview2-policy.ps1
       - name: Test Windows subprocess timeout
         if: runner.os == 'Windows'
         timeout-minutes: 3
