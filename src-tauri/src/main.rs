@@ -317,7 +317,13 @@ fn fit_picker(
         let last_y = area.position.y + max_height.saturating_sub(height) as i32;
         let mut pending = pending.lock().unwrap();
         // A move may already have happened even if its event is still queued.
-        pending.record_move(window.label(), position, true, false);
+        pending.record_move(
+            window.label(),
+            position,
+            true,
+            false,
+            Some(dimensions(inner, scale)),
+        );
         pending
             .fit_needs_position(window.label(), id, size_changed)
             .then(|| {
@@ -411,10 +417,22 @@ fn record_picker_position(window: &tauri::Window, focused: bool) {
     let Ok(position) = window.outer_position() else {
         return;
     };
-    let retry = pending
-        .lock()
-        .unwrap()
-        .record_move(window.label(), position, is_normal, focused);
+    let normal_size = if is_normal {
+        window
+            .inner_size()
+            .ok()
+            .zip(window.scale_factor().ok())
+            .map(|(size, scale)| dimensions(size, scale))
+    } else {
+        None
+    };
+    let retry = pending.lock().unwrap().record_move(
+        window.label(),
+        position,
+        is_normal,
+        focused,
+        normal_size,
+    );
     if retry {
         let _ = window.emit_to(window.label(), "picker-changed", None::<u64>);
     }

@@ -202,6 +202,7 @@ impl PendingLinks {
         position: PhysicalPosition<i32>,
         is_normal: bool,
         focused: bool,
+        normal_size: Option<Dimensions>,
     ) -> bool {
         let Some(link) = self.by_window.get_mut(window) else {
             return false;
@@ -215,6 +216,12 @@ impl PendingLinks {
             return false;
         }
         let restored = std::mem::take(&mut link.fit_position_waiting_for_restore);
+        if restored && matches!(link.resize, ResizeTracking::AwaitingNormalSize) {
+            // A restore that only moves the window may never send Resized.
+            if let Some(size) = normal_size.filter(|size| size.is_valid()) {
+                link.resize = ResizeTracking::Presented(size);
+            }
+        }
         if pending != position {
             link.fit_position_pending = None;
             return false;
@@ -909,11 +916,17 @@ mod tests {
         }
 
         // A delayed move notification for the position already observed after failure is harmless.
-        links.record_move(MAIN_WINDOW, position, true, false);
+        links.record_move(MAIN_WINDOW, position, true, false, None);
         assert!(links.fit_needs_position(MAIN_WINDOW, Some(1), false));
 
-        links.record_move(MAIN_WINDOW, PhysicalPosition::new(130, 200), true, false);
-        links.record_move(MAIN_WINDOW, position, true, false);
+        links.record_move(
+            MAIN_WINDOW,
+            PhysicalPosition::new(130, 200),
+            true,
+            false,
+            None,
+        );
+        links.record_move(MAIN_WINDOW, position, true, false, None);
         assert!(!links.fit_needs_position(MAIN_WINDOW, Some(1), false));
         assert!(links.fit_needs_position(MAIN_WINDOW, Some(1), true));
         assert!(links.fit_needs_position("picker-2", Some(2), false));
@@ -932,7 +945,7 @@ mod tests {
         links.record_fit_failure(MAIN_WINDOW, 1, size, size, false, Some(position));
 
         // Non-normal coordinates must not replace the normal position before restoration.
-        links.record_move(MAIN_WINDOW, PhysicalPosition::new(0, 0), false, false);
+        links.record_move(MAIN_WINDOW, PhysicalPosition::new(0, 0), false, false, None);
         links.track_restored_size(MAIN_WINDOW, 1);
         links.record_scale_change(MAIN_WINDOW, size, false);
         let restored_size = Dimensions {
@@ -940,15 +953,52 @@ mod tests {
             ..size
         };
         assert!(!links.record_resize(MAIN_WINDOW, restored_size));
-        assert!(links.record_move(MAIN_WINDOW, position, true, false));
-        assert!(!links.record_move(MAIN_WINDOW, position, true, false));
-        assert!(links.record_move(MAIN_WINDOW, position, true, true));
+        assert!(links.record_move(MAIN_WINDOW, position, true, false, None));
+        assert!(!links.record_move(MAIN_WINDOW, position, true, false, None));
+        assert!(links.record_move(MAIN_WINDOW, position, true, true, None));
         assert!(links.can_fit(MAIN_WINDOW, Some(1), false));
         assert!(links.fit_needs_position(MAIN_WINDOW, Some(1), false));
 
-        assert!(!links.record_move(MAIN_WINDOW, PhysicalPosition::new(0, 0), false, false));
-        assert!(!links.record_move(MAIN_WINDOW, PhysicalPosition::new(130, 200), true, false));
+        assert!(!links.record_move(MAIN_WINDOW, PhysicalPosition::new(0, 0), false, false, None));
+        assert!(!links.record_move(
+            MAIN_WINDOW,
+            PhysicalPosition::new(130, 200),
+            true,
+            false,
+            None
+        ));
         assert!(!links.fit_needs_position(MAIN_WINDOW, Some(1), false));
+    }
+
+    #[test]
+    fn saves_the_first_manual_resize_after_restoring_only_the_position() {
+        let mut links = PendingLinks::default();
+        links.add([url("https://example.com/")], None);
+        let size = Dimensions {
+            width: 460.0,
+            height: 550.0,
+        };
+        let position = PhysicalPosition::new(100, 200);
+        links.set_presented(MAIN_WINDOW, 1, size);
+        links.record_fit_failure(MAIN_WINDOW, 1, size, size, false, Some(position));
+
+        assert!(!links.record_move(MAIN_WINDOW, position, false, false, None));
+        assert!(!links.record_move(
+            MAIN_WINDOW,
+            PhysicalPosition::new(90, 440),
+            true,
+            true,
+            Some(size),
+        ));
+        assert!(!links.fit_needs_position(MAIN_WINDOW, Some(1), false));
+        assert!(links.get(MAIN_WINDOW).unwrap().preferred_size.is_none());
+
+        let manual = Dimensions {
+            width: 500.0,
+            height: 600.0,
+        };
+        assert!(links.record_resize(MAIN_WINDOW, manual));
+        assert_eq!(links.get(MAIN_WINDOW).unwrap().preferred_size, Some(manual));
     }
 
     #[test]
