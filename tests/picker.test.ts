@@ -30,7 +30,7 @@ describe("browser picker", () => {
   beforeAll(async () => {
     document.body.innerHTML = '<main id="app"></main>';
     vi.mocked(listen).mockImplementation(async (event, handler) => {
-      if (event === "main-picker-changed") {
+      if (event === "picker-changed") {
         emitQueueChange = (finishedId) => handler({ event, id: 1, payload: finishedId as never });
       } else if (event === "picker-deferred") {
         emitDeferred = (id, count) => handler({ event, id: 2, payload: [id, count] as never });
@@ -366,7 +366,8 @@ describe("browser picker", () => {
       }
       if (command === "picker_icons" && (args as { id: number }).id === 70) {
         if (++iconAttempts === 1 && failIcons) throw new Error("icons unavailable");
-        return { "browser-one": "data:image/png;base64,iVBORw0KGgo=" } as never;
+        const icon = "data:image/png;base64,iVBORw0KGgo=";
+        return { "browser-one": icon, "browser-two": icon } as never;
       }
       return undefined as never;
     });
@@ -495,7 +496,7 @@ describe("browser picker", () => {
 });
 
 describe("main picker initialization", () => {
-  const queueChanged = "main-picker-changed";
+  const queueChanged = "picker-changed";
   const pickerDeferred = "picker-deferred";
   const subscribe = vi.mocked(listen);
   const subscriptions = new Map<string, (payload: unknown) => void>();

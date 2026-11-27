@@ -65,7 +65,7 @@ fn collect_browser_choices(url: &Url, own_identifier: &str) -> Vec<BrowserChoice
 }
 
 thread_local! {
-    static ICONS: RefCell<HashMap<String, Option<String>>> = RefCell::default();
+    static ICONS: RefCell<HashMap<String, String>> = RefCell::default();
 }
 
 pub fn browser_icons(url: &Url, own_identifier: &str) -> HashMap<String, String> {
@@ -75,10 +75,15 @@ pub fn browser_icons(url: &Url, own_identifier: &str) -> HashMap<String, String>
         browser_choices(url, own_identifier)
             .into_iter()
             .filter_map(|choice| {
-                let icon = cache
-                    .entry(choice.id.clone())
-                    .or_insert_with(|| browser_icon(&workspace, &choice.id));
-                icon.clone().map(|icon| (choice.id, icon))
+                let icon = match cache.get(&choice.id) {
+                    Some(icon) => icon.clone(),
+                    None => {
+                        let icon = browser_icon(&workspace, &choice.id)?;
+                        cache.insert(choice.id.clone(), icon.clone());
+                        icon
+                    }
+                };
+                Some((choice.id, icon))
             })
             .collect()
     })

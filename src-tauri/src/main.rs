@@ -239,15 +239,15 @@ fn fit_picker(
     };
     if window.is_maximized()? || window.is_fullscreen()? || window.is_minimized()? {
         let mut pending = pending.lock().unwrap();
+        if let Some(id) = id {
+            pending.track_restored_size(window.label(), id);
+        }
         if pending.fit_needs_position(window.label(), id, false) {
             // Keep the frontend retry pending until the normal position can be checked.
             return Err(tauri::Error::Io(std::io::Error::new(
                 std::io::ErrorKind::WouldBlock,
                 "Picker position can be checked after restoring the window",
             )));
-        }
-        if let Some(id) = id {
-            pending.track_restored_size(window.label(), id);
         }
         return Ok(());
     }
@@ -287,32 +287,37 @@ fn fit_picker(
     } else {
         (default_height * scale).ceil() as u32
     };
-    let width = preferred
+    let mut width = preferred
         .map_or(inner.width, |size| (size.width * scale).round() as u32)
         .min(max_width);
-    let height = height.min(max_height);
+    let mut height = height.min(max_height);
     if width == 0 || height == 0 {
         return Ok(());
     }
 
+    let position_pending = pending
+        .lock()
+        .unwrap()
+        .fit_needs_position(window.label(), id, false);
+    if grow_only && height <= inner.height {
+        if !position_pending {
+            return Ok(());
+        }
+        // Retry the placement of the current frame without shrinking it.
+        width = inner.width;
+        height = inner.height;
+    }
     let target = PhysicalSize::new(width, height);
     let size_changed = target != inner;
-    let adjust_position =
-        pending
-            .lock()
-            .unwrap()
-            .fit_needs_position(window.label(), id, size_changed);
-    if grow_only && height <= inner.height && (size_changed || !adjust_position) {
-        return Ok(());
-    }
+    let adjust_position = size_changed || position_pending;
 
     let target_position = if adjust_position {
         let position = window.outer_position()?;
-        let last_x = area.position.x + (max_width - width) as i32;
-        let last_y = area.position.y + (max_height - height) as i32;
+        let last_x = area.position.x + max_width.saturating_sub(width) as i32;
+        let last_y = area.position.y + max_height.saturating_sub(height) as i32;
         let mut pending = pending.lock().unwrap();
         // A move may already have happened even if its event is still queued.
-        pending.record_move(window.label(), position, true);
+        pending.record_move(window.label(), position, true, false);
         pending
             .fit_needs_position(window.label(), id, size_changed)
             .then(|| {
@@ -374,9 +379,50 @@ fn dimensions(size: PhysicalSize<u32>, scale: f64) -> Dimensions {
     }
 }
 
+fn picker_window_is_maximized(window: &tauri::Window) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        // WM_WINDOWPOSCHANGED can report a move before Tao processes WM_SIZE.
+        window.hwnd().map_or(true, |hwnd| unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::IsZoomed(hwnd.0 as _) != 0
+        })
+    }
+    #[cfg(target_os = "macos")]
+    {
+        window.is_maximized().unwrap_or(true)
+    }
+}
+
+fn record_picker_position(window: &tauri::Window, focused: bool) {
+    let pending = window.state::<Mutex<PendingLinks>>();
+    {
+        let pending = pending.lock().unwrap();
+        let id = pending.get(window.label()).map(|link| link.id);
+        if !pending.fit_needs_position(window.label(), id, false) {
+            return;
+        }
+    }
+    if !window.is_visible().unwrap_or(false) {
+        return;
+    }
+    let is_normal = !picker_window_is_maximized(window)
+        && !window.is_fullscreen().unwrap_or(true)
+        && !window.is_minimized().unwrap_or(true);
+    let Ok(position) = window.outer_position() else {
+        return;
+    };
+    let retry = pending
+        .lock()
+        .unwrap()
+        .record_move(window.label(), position, is_normal, focused);
+    if retry {
+        let _ = window.emit_to(window.label(), "picker-changed", None::<u64>);
+    }
+}
+
 fn record_picker_resize(window: &tauri::Window, size: PhysicalSize<u32>) {
     if !window.is_visible().unwrap_or(false)
-        || window.is_maximized().unwrap_or(true)
+        || picker_window_is_maximized(window)
         || window.is_fullscreen().unwrap_or(true)
         || window.is_minimized().unwrap_or(true)
         || window.inner_size().ok() != Some(size)
@@ -428,7 +474,7 @@ fn finish_link(window: &WebviewWindow, id: u64) {
             show_main_picker(window, Some(id));
         } else {
             let _ = window.hide();
-            let _ = window.emit("main-picker-changed", Some(id));
+            let _ = window.emit_to(window.label(), "picker-changed", Some(id));
         }
     } else {
         let _ = window.destroy();
@@ -437,7 +483,7 @@ fn finish_link(window: &WebviewWindow, id: u64) {
 
 fn show_main_picker(window: &WebviewWindow, finished_id: Option<u64>) {
     show_window(window);
-    let _ = window.emit("main-picker-changed", finished_id);
+    let _ = window.emit_to(window.label(), "picker-changed", finished_id);
 }
 
 fn recover_picker(app: &AppHandle, label: &str) {
@@ -631,6 +677,7 @@ fn reopen(app: &AppHandle) {
             show_main_picker(&window, None);
         } else {
             show_window(&window);
+            let _ = window.emit_to(window.label(), "picker-changed", None::<u64>);
         }
     }
 }
@@ -696,22 +743,13 @@ fn main() {
             fit_picker,
         ])
         .on_window_event(|window, event| match event {
-            WindowEvent::Moved(position) => {
-                if window.is_visible().unwrap_or(false)
-                    && window.outer_position().ok() == Some(*position)
-                {
-                    let is_normal = !window.is_maximized().unwrap_or(true)
-                        && !window.is_fullscreen().unwrap_or(true)
-                        && !window.is_minimized().unwrap_or(true);
-                    window
-                        .state::<Mutex<PendingLinks>>()
-                        .lock()
-                        .unwrap()
-                        .record_move(window.label(), *position, is_normal);
-                }
-            }
+            WindowEvent::Moved(_) => record_picker_position(window, false),
+            // macOS can restore a minimized window without changing its frame.
+            #[cfg(target_os = "macos")]
+            WindowEvent::Focused(focused) => record_picker_position(window, *focused),
             WindowEvent::Resized(size) => {
                 if window.try_state::<Mutex<PickerSize>>().is_some() {
+                    record_picker_position(window, false);
                     record_picker_resize(window, *size);
                 }
             }
@@ -720,7 +758,7 @@ fn main() {
                 new_inner_size,
                 ..
             } => {
-                let is_normal = !window.is_maximized().unwrap_or(true)
+                let is_normal = !picker_window_is_maximized(window)
                     && !window.is_fullscreen().unwrap_or(true)
                     && !window.is_minimized().unwrap_or(true);
                 window

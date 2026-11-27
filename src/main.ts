@@ -18,7 +18,8 @@ interface Picker {
 
 const isWindows = navigator.userAgent.includes("Windows");
 const app = document.querySelector<HTMLElement>("#app")!;
-const isMainWindow = getCurrentWindow().label === "main";
+const windowLabel = getCurrentWindow().label;
+const isMainWindow = windowLabel === "main";
 let current: Picker | null = null;
 let requestNumber = 0;
 let launchingLinkId: number | undefined;
@@ -203,17 +204,33 @@ function heading(title: string, description: string, isLink = false) {
 function retryable(action: () => Promise<unknown>) {
   let attempt = 0;
   let failed = false;
+  let running = false;
+  let retryRequested = false;
   function run() {
     const request = ++attempt;
     failed = false;
-    void action().catch(() => {
-      if (request === attempt) failed = true;
+    running = true;
+    retryRequested = false;
+    void action().then(() => {
+      if (request === attempt) running = false;
+    }, () => {
+      if (request !== attempt) return;
+      running = false;
+      failed = true;
+      if (retryRequested) run();
     });
   }
-  return { run, retry: () => { if (failed) run(); } };
+  return {
+    run,
+    retry: () => {
+      if (failed) run();
+      else if (running) retryRequested = true;
+    },
+  };
 }
 
-function fitPicker(list?: HTMLUListElement, growOnly?: true) {
+function fitPicker(list?: HTMLUListElement, growOnly?: true, id = current?.id) {
+  if (id !== current?.id) return Promise.resolve();
   // A scrollable list's hidden rows do not contribute to the main element's height.
   const contentHeight = list
     ? app.scrollHeight + list.scrollHeight - list.clientHeight
@@ -221,7 +238,7 @@ function fitPicker(list?: HTMLUListElement, growOnly?: true) {
   return invoke("fit_picker", {
     contentHeight,
     viewportHeight: window.innerHeight,
-    id: current?.id,
+    id,
     ...(growOnly && { growOnly }),
   });
 }
@@ -291,8 +308,8 @@ function render() {
   if (isMainWindow) acknowledgePicker(id);
   const browserList = browsers.length ? list : undefined;
   const effects = {
-    fit: retryable(() => fitPicker(browserList)),
-    grow: retryable(() => fitPicker(browserList, true)),
+    fit: retryable(() => fitPicker(browserList, undefined, id)),
+    grow: retryable(() => fitPicker(browserList, true, id)),
     icons: !isWindows && icons.size ? retryable(() => loadIcons(id, icons)) : undefined,
   };
   pickerEffects = effects;
@@ -313,6 +330,7 @@ function acknowledgePicker(id: number, delay = 250) {
 }
 
 async function loadIcons(id: number, placeholders: Map<string, HTMLElement>) {
+  if (current?.id !== id) return;
   const icons = await invoke<Record<string, string>>("picker_icons", { id });
   for (const [browserId, source] of Object.entries(icons)) {
     const placeholder = placeholders.get(browserId);
@@ -321,7 +339,9 @@ async function loadIcons(id: number, placeholders: Map<string, HTMLElement>) {
     icon.src = source;
     icon.alt = "";
     placeholder.replaceWith(icon);
+    placeholders.delete(browserId);
   }
+  if (current?.id === id && placeholders.size) throw new Error("Some browser icons are unavailable");
 }
 
 window.addEventListener("keydown", (event) => {
@@ -342,10 +362,11 @@ window.addEventListener("keydown", (event) => {
   }
 });
 
-function subscribeOnce<T>(event: string, handler: EventCallback<T>, onSubscribed?: () => void) {
+function subscribeOnce<T>(event: string, handler: EventCallback<T>, onSubscribed?: () => void, label?: string) {
   let subscription: Promise<unknown> | undefined;
-  return () => subscription ??= listenPickerEvent(event, handler)
-    .catch(() => listenPickerEvent(event, handler))
+  const subscribe = () => listenPickerEvent(event, handler, label);
+  return () => subscription ??= subscribe()
+    .catch(subscribe)
     .catch((error) => {
       subscription = undefined;
       throw error;
@@ -353,13 +374,13 @@ function subscribeOnce<T>(event: string, handler: EventCallback<T>, onSubscribed
     .then(onSubscribed);
 }
 
-const subscribeToPickerChanges = subscribeOnce<number | null>("main-picker-changed", ({ payload: finishedId }) => {
+const subscribeToPickerChanges = subscribeOnce<number | null>("picker-changed", ({ payload: finishedId }) => {
   if (current && current.id === finishedId) {
     closingLinkId = finishedId;
     updatePickerActions(finishedId);
   }
   if (listenersReady) void refresh();
-});
+}, undefined, windowLabel);
 type Waiting = [id: number, count: number];
 
 function updateWaiting([id, count]: Waiting) {
@@ -416,13 +437,14 @@ async function initializePicker(delay = 250) {
 if (isMainWindow) {
   render();
   recoverDeferredSubscription();
-  window.addEventListener("focus", () => {
-    if (!listenersReady) void initializePicker();
-  });
-  void initializePicker();
+
 } else {
   const status = element("p", "status");
   status.setAttribute("role", "status");
   app.append(status);
-  void refresh();
 }
+
+window.addEventListener("focus", () => {
+  if (!listenersReady) void initializePicker();
+});
+void initializePicker();

@@ -64,6 +64,7 @@ pub struct Link {
     resize: ResizeTracking,
     fit_padding: Option<f64>,
     fit_position_pending: Option<PhysicalPosition<i32>>,
+    fit_position_waiting_for_restore: bool,
     pub slot: usize,
     launch: LaunchState,
 }
@@ -111,6 +112,7 @@ impl PendingLinks {
                     resize: ResizeTracking::NotShown,
                     fit_padding: None,
                     fit_position_pending: None,
+                    fit_position_waiting_for_restore: false,
                     slot,
                     launch: LaunchState::Idle,
                 },
@@ -151,7 +153,8 @@ impl PendingLinks {
                     && if grow_only {
                         link.preferred_size.is_none()
                     } else {
-                        !matches!(link.resize, ResizeTracking::Presented(_))
+                        link.fit_position_pending.is_some()
+                            || !matches!(link.resize, ResizeTracking::Presented(_))
                     }
             }
             (None, None) => true,
@@ -169,6 +172,9 @@ impl PendingLinks {
 
     pub fn record_scale_change(&mut self, window: &str, size: Dimensions, is_normal: bool) {
         if let Some(link) = self.by_window.get_mut(window).filter(|_| size.is_valid()) {
+            if !is_normal && link.fit_position_pending.is_some() {
+                link.fit_position_waiting_for_restore = true;
+            }
             match &mut link.resize {
                 ResizeTracking::Loading(last) | ResizeTracking::Presented(last) => {
                     if is_normal {
@@ -190,24 +196,37 @@ impl PendingLinks {
                 .is_some_and(|link| link.fit_position_pending.is_some())
     }
 
-    pub fn record_move(&mut self, window: &str, position: PhysicalPosition<i32>, is_normal: bool) {
+    pub fn record_move(
+        &mut self,
+        window: &str,
+        position: PhysicalPosition<i32>,
+        is_normal: bool,
+        focused: bool,
+    ) -> bool {
+        let Some(link) = self.by_window.get_mut(window) else {
+            return false;
+        };
+        let Some(pending) = link.fit_position_pending else {
+            return false;
+        };
         if !is_normal {
-            return;
+            link.fit_position_waiting_for_restore = true;
+            link.resize = ResizeTracking::AwaitingNormalSize;
+            return false;
         }
-        if let Some(link) = self.by_window.get_mut(window) {
-            if link
-                .fit_position_pending
-                .is_some_and(|pending| pending != position)
-            {
-                link.fit_position_pending = None;
-            }
+        let restored = std::mem::take(&mut link.fit_position_waiting_for_restore);
+        if pending != position {
+            link.fit_position_pending = None;
+            return false;
         }
+        restored || focused
     }
 
     pub fn set_presented(&mut self, window: &str, id: u64, size: Dimensions) {
         if let Some(link) = self.by_window.get_mut(window).filter(|link| link.id == id) {
             link.resize = ResizeTracking::Presented(size);
             link.fit_position_pending = None;
+            link.fit_position_waiting_for_restore = false;
         }
     }
 
@@ -245,10 +264,11 @@ impl PendingLinks {
     pub fn track_restored_size(&mut self, window: &str, id: u64) {
         if let Some(link) = self.by_window.get_mut(window).filter(|link| {
             link.id == id
-                && link.fit_position_pending.is_none()
-                && !matches!(link.resize, ResizeTracking::Presented(_))
+                && (link.fit_position_pending.is_some()
+                    || !matches!(link.resize, ResizeTracking::Presented(_)))
         }) {
             link.resize = ResizeTracking::AwaitingNormalSize;
+            link.fit_position_waiting_for_restore = link.fit_position_pending.is_some();
         }
     }
 
@@ -268,6 +288,7 @@ impl PendingLinks {
                 }
                 link.resize = ResizeTracking::Presented(size);
                 link.fit_position_pending = None;
+                link.fit_position_waiting_for_restore = false;
                 link.preferred_size = Some(size);
                 true
             }
@@ -326,6 +347,7 @@ impl PendingLinks {
         link.resize = ResizeTracking::NotShown;
         link.fit_padding = None;
         link.fit_position_pending = None;
+        link.fit_position_waiting_for_restore = false;
         self.by_window.insert(MAIN_WINDOW.to_owned(), link);
         true
     }
@@ -887,11 +909,11 @@ mod tests {
         }
 
         // A delayed move notification for the position already observed after failure is harmless.
-        links.record_move(MAIN_WINDOW, position, true);
+        links.record_move(MAIN_WINDOW, position, true, false);
         assert!(links.fit_needs_position(MAIN_WINDOW, Some(1), false));
 
-        links.record_move(MAIN_WINDOW, PhysicalPosition::new(130, 200), true);
-        links.record_move(MAIN_WINDOW, position, true);
+        links.record_move(MAIN_WINDOW, PhysicalPosition::new(130, 200), true, false);
+        links.record_move(MAIN_WINDOW, position, true, false);
         assert!(!links.fit_needs_position(MAIN_WINDOW, Some(1), false));
         assert!(links.fit_needs_position(MAIN_WINDOW, Some(1), true));
         assert!(links.fit_needs_position("picker-2", Some(2), false));
@@ -910,14 +932,22 @@ mod tests {
         links.record_fit_failure(MAIN_WINDOW, 1, size, size, false, Some(position));
 
         // Non-normal coordinates must not replace the normal position before restoration.
-        links.record_move(MAIN_WINDOW, PhysicalPosition::new(0, 0), false);
+        links.record_move(MAIN_WINDOW, PhysicalPosition::new(0, 0), false, false);
         links.track_restored_size(MAIN_WINDOW, 1);
-        links.record_resize(MAIN_WINDOW, size);
-        links.record_move(MAIN_WINDOW, position, true);
+        links.record_scale_change(MAIN_WINDOW, size, false);
+        let restored_size = Dimensions {
+            width: 465.0,
+            ..size
+        };
+        assert!(!links.record_resize(MAIN_WINDOW, restored_size));
+        assert!(links.record_move(MAIN_WINDOW, position, true, false));
+        assert!(!links.record_move(MAIN_WINDOW, position, true, false));
+        assert!(links.record_move(MAIN_WINDOW, position, true, true));
         assert!(links.can_fit(MAIN_WINDOW, Some(1), false));
         assert!(links.fit_needs_position(MAIN_WINDOW, Some(1), false));
 
-        links.record_move(MAIN_WINDOW, PhysicalPosition::new(130, 200), true);
+        assert!(!links.record_move(MAIN_WINDOW, PhysicalPosition::new(0, 0), false, false));
+        assert!(!links.record_move(MAIN_WINDOW, PhysicalPosition::new(130, 200), true, false));
         assert!(!links.fit_needs_position(MAIN_WINDOW, Some(1), false));
     }
 

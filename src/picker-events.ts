@@ -3,10 +3,11 @@ import type { EventCallback } from "@tauri-apps/api/event";
 
 // These listeners live as long as the picker webview. Tauri's listen helper
 // leaves its callback registered when the IPC request rejects.
-export async function listenPickerEvent<T>(event: string, handler: EventCallback<T>): Promise<unknown> {
+export async function listenPickerEvent<T>(event: string, handler: EventCallback<T>, label?: string): Promise<unknown> {
   const callback = transformCallback(handler);
+  const target = label === undefined ? { kind: "Any" } : { kind: "WebviewWindow", label };
   try {
-    return await invoke("plugin:event|listen", { event, target: { kind: "Any" }, handler: callback });
+    return await invoke("plugin:event|listen", { event, target, handler: callback });
   } catch (error) {
     const { __TAURI_INTERNALS__: internals } = window as Window & {
       __TAURI_INTERNALS__?: { unregisterCallback(id: number): void };
