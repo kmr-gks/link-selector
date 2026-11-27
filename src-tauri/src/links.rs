@@ -190,7 +190,10 @@ impl PendingLinks {
                 .is_some_and(|link| link.fit_position_pending.is_some())
     }
 
-    pub fn record_move(&mut self, window: &str, position: PhysicalPosition<i32>) {
+    pub fn record_move(&mut self, window: &str, position: PhysicalPosition<i32>, is_normal: bool) {
+        if !is_normal {
+            return;
+        }
         if let Some(link) = self.by_window.get_mut(window) {
             if link
                 .fit_position_pending
@@ -243,7 +246,11 @@ impl PendingLinks {
         if let Some(link) = self
             .by_window
             .get_mut(window)
-            .filter(|link| link.id == id && !matches!(link.resize, ResizeTracking::Presented(_)))
+            .filter(|link| {
+                link.id == id
+                    && link.fit_position_pending.is_none()
+                    && !matches!(link.resize, ResizeTracking::Presented(_))
+            })
         {
             link.resize = ResizeTracking::AwaitingNormalSize;
         }
@@ -884,14 +891,38 @@ mod tests {
         }
 
         // A delayed move notification for the position already observed after failure is harmless.
-        links.record_move(MAIN_WINDOW, position);
+        links.record_move(MAIN_WINDOW, position, true);
         assert!(links.fit_needs_position(MAIN_WINDOW, Some(1), false));
 
-        links.record_move(MAIN_WINDOW, PhysicalPosition::new(130, 200));
-        links.record_move(MAIN_WINDOW, position);
+        links.record_move(MAIN_WINDOW, PhysicalPosition::new(130, 200), true);
+        links.record_move(MAIN_WINDOW, position, true);
         assert!(!links.fit_needs_position(MAIN_WINDOW, Some(1), false));
         assert!(links.fit_needs_position(MAIN_WINDOW, Some(1), true));
         assert!(links.fit_needs_position("picker-2", Some(2), false));
+    }
+
+    #[test]
+    fn a_pending_position_retry_uses_the_restored_window_position() {
+        let mut links = PendingLinks::default();
+        links.add([url("https://example.com/")], None);
+        let size = Dimensions {
+            width: 460.0,
+            height: 550.0,
+        };
+        let position = PhysicalPosition::new(100, 200);
+        links.set_presented(MAIN_WINDOW, 1, size);
+        links.record_fit_failure(MAIN_WINDOW, 1, size, size, false, Some(position));
+
+        // Non-normal coordinates must not replace the normal position before restoration.
+        links.record_move(MAIN_WINDOW, PhysicalPosition::new(0, 0), false);
+        links.track_restored_size(MAIN_WINDOW, 1);
+        links.record_resize(MAIN_WINDOW, size);
+        links.record_move(MAIN_WINDOW, position, true);
+        assert!(links.can_fit(MAIN_WINDOW, Some(1), false));
+        assert!(links.fit_needs_position(MAIN_WINDOW, Some(1), false));
+
+        links.record_move(MAIN_WINDOW, PhysicalPosition::new(130, 200), true);
+        assert!(!links.fit_needs_position(MAIN_WINDOW, Some(1), false));
     }
 
     #[test]

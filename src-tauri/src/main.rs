@@ -237,13 +237,17 @@ fn fit_picker(
             .unwrap()
             .preferred
     };
-    if window.is_maximized()? || window.is_fullscreen()? {
+    if window.is_maximized()? || window.is_fullscreen()? || window.is_minimized()? {
+        let mut pending = pending.lock().unwrap();
+        if pending.fit_needs_position(window.label(), id, false) {
+            // Keep the frontend retry pending until the normal position can be checked.
+            return Err(tauri::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "Picker position can be checked after restoring the window",
+            )));
+        }
         if let Some(id) = id {
-            window
-                .state::<Mutex<PendingLinks>>()
-                .lock()
-                .unwrap()
-                .track_restored_size(window.label(), id);
+            pending.track_restored_size(window.label(), id);
         }
         return Ok(());
     }
@@ -308,7 +312,7 @@ fn fit_picker(
         let last_y = area.position.y + (max_height - height) as i32;
         let mut pending = pending.lock().unwrap();
         // A move may already have happened even if its event is still queued.
-        pending.record_move(window.label(), position);
+        pending.record_move(window.label(), position, true);
         pending
             .fit_needs_position(window.label(), id, size_changed)
             .then(|| {
@@ -696,11 +700,14 @@ fn main() {
                 if window.is_visible().unwrap_or(false)
                     && window.outer_position().ok() == Some(*position)
                 {
+                    let is_normal = !window.is_maximized().unwrap_or(true)
+                        && !window.is_fullscreen().unwrap_or(true)
+                        && !window.is_minimized().unwrap_or(true);
                     window
                         .state::<Mutex<PendingLinks>>()
                         .lock()
                         .unwrap()
-                        .record_move(window.label(), *position);
+                        .record_move(window.label(), *position, is_normal);
                 }
             }
             WindowEvent::Resized(size) => {
