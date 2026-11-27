@@ -269,7 +269,7 @@ describe("browser picker", () => {
     expect(request).toHaveBeenCalledWith("open_browser", { id: 10, browserId: "browser-one" });
   });
 
-  it("offers a retry when the picker state remains unavailable", async () => {
+  it("offers a retry when the next picker state remains unavailable", async () => {
     let unavailable = true;
     request.mockImplementation(async (command) => {
       if (command === "picker_state") {
@@ -278,7 +278,7 @@ describe("browser picker", () => {
       }
       return undefined as never;
     });
-    emitQueueChange();
+    emitQueueChange(link.id);
     await vi.waitFor(() => expect(document.querySelector('[role="alert"]')).not.toBeNull());
     key("1");
     expect(request).not.toHaveBeenCalledWith("open_browser", expect.anything());

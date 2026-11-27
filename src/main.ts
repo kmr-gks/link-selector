@@ -72,6 +72,12 @@ function showLoadError(message: string, retry: () => Promise<void>) {
   app.replaceChildren(error, actions);
 }
 
+function retryPickerEffects() {
+  pickerEffects?.fit.retry();
+  pickerEffects?.grow.retry();
+  pickerEffects?.icons?.retry();
+}
+
 async function refresh() {
   const request = ++requestNumber;
   const notifications = new Map<number, number>();
@@ -91,9 +97,7 @@ async function refresh() {
       view.browsers.every((browser, index) => browser.id === previous.browsers[index].id &&
         browser.name === previous.browsers[index].name)) {
       updateWaiting([view.id, view.waiting]);
-      pickerEffects?.fit.retry();
-      pickerEffects?.grow.retry();
-      pickerEffects?.icons?.retry();
+      retryPickerEffects();
       return;
     }
     if (view?.id !== closingLinkId) closingLinkId = undefined;
@@ -102,6 +106,10 @@ async function refresh() {
     render();
   } catch {
     if (request !== requestNumber) return;
+    if (current && current.id !== closingLinkId) {
+      retryPickerEffects();
+      return;
+    }
     current = null;
     statusMessage = "";
     showLoadError("選択画面を読み込めませんでした。", refresh);
@@ -420,7 +428,7 @@ async function initializePicker(delay = 250) {
   try {
     await subscribeToPickerChanges();
   } catch {
-    if (!app.querySelector(".close-load-error")) {
+    if (isMainWindow && !app.querySelector(".close-load-error")) {
       showLoadError("選択画面を初期化できませんでした。", initializePicker);
     }
     initializationTimeout = window.setTimeout(() => {
@@ -431,17 +439,17 @@ async function initializePicker(delay = 250) {
     initializing = false;
   }
   listenersReady = true;
-  await refresh();
+  if (isMainWindow) await refresh();
 }
 
 if (isMainWindow) {
   render();
   recoverDeferredSubscription();
-
 } else {
   const status = element("p", "status");
   status.setAttribute("role", "status");
   app.append(status);
+  void refresh();
 }
 
 window.addEventListener("focus", () => {
