@@ -63,6 +63,7 @@ pub struct Link {
     pub preferred_size: Option<Dimensions>,
     resize: ResizeTracking,
     fit_padding: Option<f64>,
+    fit_position_pending: bool,
     pub slot: usize,
     launch: LaunchState,
 }
@@ -109,6 +110,7 @@ impl PendingLinks {
                     preferred_size,
                     resize: ResizeTracking::NotShown,
                     fit_padding: None,
+                    fit_position_pending: false,
                     slot,
                     launch: LaunchState::Idle,
                 },
@@ -181,9 +183,17 @@ impl PendingLinks {
         }
     }
 
+    pub fn fit_needs_position(&self, window: &str, id: Option<u64>, size_changed: bool) -> bool {
+        size_changed
+            || id
+                .and_then(|id| self.get_with_id(window, id))
+                .is_some_and(|link| link.fit_position_pending)
+    }
+
     pub fn set_presented(&mut self, window: &str, id: u64, size: Dimensions) {
         if let Some(link) = self.by_window.get_mut(window).filter(|link| link.id == id) {
             link.resize = ResizeTracking::Presented(size);
+            link.fit_position_pending = false;
         }
     }
 
@@ -194,11 +204,13 @@ impl PendingLinks {
         target: Dimensions,
         actual: Dimensions,
         grow_only: bool,
+        position_pending: bool,
     ) {
         if let Some(link) = self.by_window.get_mut(window).filter(|link| {
             link.id == id
                 && matches!(link.resize, ResizeTracking::Presented(size) if !size.differs_from(target))
         }) {
+            link.fit_position_pending = position_pending;
             link.resize = if grow_only {
                 ResizeTracking::Presented(actual)
             } else {
@@ -241,6 +253,7 @@ impl PendingLinks {
                     return false;
                 }
                 link.resize = ResizeTracking::Presented(size);
+                link.fit_position_pending = false;
                 link.preferred_size = Some(size);
                 true
             }
@@ -298,6 +311,7 @@ impl PendingLinks {
         link.preferred_size = preferred_size;
         link.resize = ResizeTracking::NotShown;
         link.fit_padding = None;
+        link.fit_position_pending = false;
         self.by_window.insert(MAIN_WINDOW.to_owned(), link);
         true
     }
@@ -802,6 +816,34 @@ mod tests {
     }
 
     #[test]
+    fn a_same_size_fit_keeps_position_except_when_completing_a_previous_resize() {
+        let mut links = PendingLinks::default();
+        let address = url("https://example.com/");
+        links.add([address.clone()], None);
+        let size = Dimensions {
+            width: 460.0,
+            height: 550.0,
+        };
+
+        assert!(!links.fit_needs_position(MAIN_WINDOW, Some(1), false));
+        assert!(links.fit_needs_position(MAIN_WINDOW, Some(1), true));
+        assert!(!links.fit_needs_position(MAIN_WINDOW, None, false));
+
+        links.set_presented(MAIN_WINDOW, 1, size);
+        links.record_fit_failure(MAIN_WINDOW, 1, size, size, false, true);
+        assert!(links.can_fit(MAIN_WINDOW, Some(1), false));
+        assert!(links.fit_needs_position(MAIN_WINDOW, Some(1), false));
+
+        links.set_presented(MAIN_WINDOW, 1, size);
+        assert!(!links.fit_needs_position(MAIN_WINDOW, Some(1), false));
+
+        links.record_fit_failure(MAIN_WINDOW, 1, size, size, true, true);
+        links.finish(MAIN_WINDOW, 1).unwrap();
+        links.add([address], None);
+        assert!(!links.fit_needs_position(MAIN_WINDOW, Some(2), false));
+    }
+
+    #[test]
     fn a_failed_initial_fit_can_be_retried_without_saving_it_as_a_preference() {
         let mut links = PendingLinks::default();
         links.add([url("https://example.com/")], None);
@@ -817,7 +859,7 @@ mod tests {
         links.set_presented(MAIN_WINDOW, 1, target);
         assert!(!links.can_fit(MAIN_WINDOW, Some(1), false));
 
-        links.record_fit_failure(MAIN_WINDOW, 1, target, initial, false);
+        links.record_fit_failure(MAIN_WINDOW, 1, target, initial, false, false);
         assert!(links.can_fit(MAIN_WINDOW, Some(1), false));
         assert!(!links.record_resize(MAIN_WINDOW, initial));
         assert!(links.get(MAIN_WINDOW).unwrap().preferred_size.is_none());

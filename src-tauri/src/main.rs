@@ -287,18 +287,31 @@ fn fit_picker(
         .map_or(inner.width, |size| (size.width * scale).round() as u32)
         .min(max_width);
     let height = height.min(max_height);
-    if width == 0 || height == 0 || (grow_only && height <= inner.height) {
+    if width == 0 || height == 0 {
         return Ok(());
     }
 
     let target = PhysicalSize::new(width, height);
-    let position = window.outer_position()?;
-    let last_x = area.position.x + (max_width - width) as i32;
-    let last_y = area.position.y + (max_height - height) as i32;
-    let target_position = PhysicalPosition::new(
-        position.x.clamp(area.position.x, last_x),
-        position.y.clamp(area.position.y, last_y),
-    );
+    let size_changed = target != inner;
+    let adjust_position = pending
+        .lock()
+        .unwrap()
+        .fit_needs_position(window.label(), id, size_changed);
+    if grow_only && height <= inner.height && (size_changed || !adjust_position) {
+        return Ok(());
+    }
+
+    let target_position = if adjust_position {
+        let position = window.outer_position()?;
+        let last_x = area.position.x + (max_width - width) as i32;
+        let last_y = area.position.y + (max_height - height) as i32;
+        Some(PhysicalPosition::new(
+            position.x.clamp(area.position.x, last_x),
+            position.y.clamp(area.position.y, last_y),
+        ))
+    } else {
+        None
+    };
     let target_dimensions = dimensions(target, scale);
     if let Some(id) = id {
         // The automatic resize event must not become a user preference.
@@ -307,14 +320,16 @@ fn fit_picker(
             .unwrap()
             .set_presented(window.label(), id, target_dimensions);
     }
+    let mut position_pending = false;
     let result = (|| {
-        if target != inner {
+        if size_changed {
             window.set_size(target)?;
         }
-        if (target != inner || position != target_position)
-            && window.outer_position()? != target_position
-        {
-            window.set_position(target_position)?;
+        if let Some(target_position) = target_position {
+            position_pending = true;
+            if window.outer_position()? != target_position {
+                window.set_position(target_position)?;
+            }
         }
         Ok(())
     })();
@@ -327,6 +342,7 @@ fn fit_picker(
                 target_dimensions,
                 actual,
                 grow_only,
+                position_pending,
             );
         }
     }
